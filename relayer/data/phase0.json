@@ -1,0 +1,24 @@
+[
+  {
+    "tx": "deposit 1 SOL",
+    "proveMs": 1764,
+    "computeUnits": 145278,
+    "txBytes": 944,
+    "feeLamports": 10000
+  },
+  {
+    "tx": "private transfer (relayed)",
+    "proveMs": 1587,
+    "computeUnits": 145870,
+    "txBytes": 944,
+    "feeLamports": 10000,
+    "relayerNetLamports": -893120
+  },
+  {
+    "tx": "withdraw to fresh address (relayed)",
+    "proveMs": 1602,
+    "computeUnits": 146148,
+    "txBytes": 976,
+    "feeLamports": 10000
+  }
+]

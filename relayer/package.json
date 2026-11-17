@@ -1,0 +1,17 @@
+{
+  "name": "patula-relayer",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "@anchor-lang/core": "^0.32.3",
+    "@solana/web3.js": "^1.99.0",
+    "bs58": "^6.0.0"
+  }
+}
