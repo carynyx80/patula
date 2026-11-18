@@ -53,6 +53,7 @@ describe("shielded pool v2 (phase 1b): private trading", () => {
     lpCurve: curve,
     lpCurveTokenVault: getAssociatedTokenAddressSync(mint.publicKey, curve, true),
     lpSolVault: pda(lp.programId, Buffer.from("sol_vault"), mint.publicKey.toBuffer()),
+    lpRewards: pda(lp.programId, Buffer.from("rewards"), mint.publicKey.toBuffer()),
     lpFeeRecipient: feeRecipient,
     lpCreator: anonCreator.publicKey,
     launchpadProgram: lp.programId,
@@ -89,14 +90,15 @@ describe("shielded pool v2 (phase 1b): private trading", () => {
     const vs = BigInt(c.virtualSol.toString()), vt = BigInt(c.virtualToken.toString());
     const newVs = (vs * vt + (vt - tokens) - 1n) / (vt - tokens);
     const net = newVs - vs;
-    const keep = 10000n - BigInt(cfg.tradeFeeBps + cfg.creatorFeeBps);
-    return net + (net * BigInt(cfg.tradeFeeBps) + keep - 1n) / keep + (net * BigInt(cfg.creatorFeeBps) + keep - 1n) / keep;
+    const total = BigInt(cfg.platformFeeBps + c.fees.buyFeeBps);
+    return net + (net * total + (10000n - total) - 1n) / (10000n - total);
   }
   async function quoteSellOut(tokens: bigint) {
     const c = await lp.account.curve.fetch(curve);
     const vs = BigInt(c.virtualSol.toString()), vt = BigInt(c.virtualToken.toString());
     const gross = vs - (vs * vt + (vt + tokens) - 1n) / (vt + tokens);
-    return gross - (gross * 100n) / 10000n;
+    const cfg = await lp.account.config.fetch(lpConfig);
+    return gross - (gross * BigInt(cfg.platformFeeBps + c.fees.sellFeeBps)) / 10000n;
   }
 
   before(async () => {
@@ -117,7 +119,7 @@ describe("shielded pool v2 (phase 1b): private trading", () => {
     // The relayer funds the creator key's rent so creator fees can land in it.
     const rent = await conn.getMinimumBalanceForRentExemption(0);
     await lp.methods
-      .createToken("Shadow Bloom", "SHDW", "")
+      .createToken("Shadow Bloom", "SHDW", "", { buyFeeBps: 100, sellFeeBps: 100, holderShareBps: 5000 })
       .accountsPartial({
         payer: relayer.publicKey,
         creator: anonCreator.publicKey,
@@ -143,7 +145,7 @@ describe("shielded pool v2 (phase 1b): private trading", () => {
     const extend = AddressLookupTableProgram.extendLookupTable({
       lookupTable: table, authority: relayer.publicKey, payer: relayer.publicKey,
       addresses: [poolPda, vaultPda, lp.programId, lpConfig, feeRecipient, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID,
-        SystemProgram.programId, a.mint, a.poolToken, a.lpCurve, a.lpCurveTokenVault, a.lpSolVault, a.lpCreator],
+        SystemProgram.programId, a.mint, a.poolToken, a.lpCurve, a.lpCurveTokenVault, a.lpSolVault, a.lpRewards, a.lpCreator],
     });
     const { blockhash } = await conn.getLatestBlockhash();
     const tx = new VersionedTransaction(new TransactionMessage({ payerKey: relayer.publicKey, recentBlockhash: blockhash, instructions: [create, extend] }).compileToV0Message());

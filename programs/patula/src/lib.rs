@@ -317,6 +317,9 @@ pub struct PrivateTrade<'info> {
     pub lp_sol_vault: UncheckedAccount<'info>,
     /// CHECK: validated by the launchpad program
     #[account(mut)]
+    pub lp_rewards: UncheckedAccount<'info>,
+    /// CHECK: validated by the launchpad program
+    #[account(mut)]
     pub lp_fee_recipient: UncheckedAccount<'info>,
     /// CHECK: validated by the launchpad program
     #[account(mut)]
@@ -337,6 +340,7 @@ impl<'info> PrivateTrade<'info> {
                 mint: self.mint.to_account_info(),
                 curve_token_vault: self.lp_curve_token_vault.to_account_info(),
                 sol_vault: self.lp_sol_vault.to_account_info(),
+                rewards: self.lp_rewards.to_account_info(),
                 buyer: self.vault.to_account_info(),
                 buyer_token: self.pool_token.to_account_info(),
                 fee_recipient: self.lp_fee_recipient.to_account_info(),
@@ -358,6 +362,7 @@ impl<'info> PrivateTrade<'info> {
                 mint: self.mint.to_account_info(),
                 curve_token_vault: self.lp_curve_token_vault.to_account_info(),
                 sol_vault: self.lp_sol_vault.to_account_info(),
+                rewards: self.lp_rewards.to_account_info(),
                 seller: self.vault.to_account_info(),
                 seller_token: self.pool_token.to_account_info(),
                 fee_recipient: self.lp_fee_recipient.to_account_info(),

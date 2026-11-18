@@ -6,11 +6,11 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-launchpad = "C7eYK9wzuSWcC5daBfLB2MxXg34PNBQjMtDKcRkBdsFP"
+launchpad = "3yiXiMT2GYNVAjvas5KNFpHvijTj823AA9DsuhWVo3BQ"
 patula = "GVrC5uW3cXm3JReHtG7R1zmJ8Sf1Zx6PHr1Hnt9Ld8GV"
 
 [programs.devnet]
-launchpad = "C7eYK9wzuSWcC5daBfLB2MxXg34PNBQjMtDKcRkBdsFP"
+launchpad = "3yiXiMT2GYNVAjvas5KNFpHvijTj823AA9DsuhWVo3BQ"
 patula = "GVrC5uW3cXm3JReHtG7R1zmJ8Sf1Zx6PHr1Hnt9Ld8GV"
 
 [registry]
