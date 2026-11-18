@@ -154,7 +154,32 @@ async function poolReady() {
 // ---- commitment tree indexer -----------------------------------------------
 
 const parser = new EventParser(POOL_ID, new BorshCoder(poolIdl));
+// Leaves are cached on the volume so restarts resume instead of re-scanning.
+// Sync walks new signatures oldest-first in small batches with retries, saving
+// progress after each batch, so rate limits only slow it down.
+const TREE_FILE = path.join(DATA_DIR, "tree-v2.json");
 const tree = { leaves: new Map(), lastSig: undefined, at: 0, syncing: null };
+try {
+  const saved = JSON.parse(readFileSync(TREE_FILE, "utf8"));
+  if (saved.pool === poolPda.toBase58()) {
+    saved.leaves.forEach((l, i) => tree.leaves.set(i, l));
+    tree.lastSig = saved.lastSig;
+  }
+} catch { /* no cache yet */ }
+const saveTree = () => {
+  try {
+    writeFileSync(TREE_FILE, JSON.stringify({ pool: poolPda.toBase58(), lastSig: tree.lastSig, leaves: Array.from({ length: tree.leaves.size }, (_, i) => tree.leaves.get(i)) }));
+  } catch { /* best effort */ }
+};
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function withRetry(fn, tries = 6) {
+  for (let i = 0; ; i++) {
+    try { return await fn(); } catch (e) {
+      if (i >= tries - 1 || !/429|Too many|timed out|fetch failed/i.test(String(e?.message || e))) throw e;
+      await sleep(500 * 2 ** i);
+    }
+  }
+}
 async function syncTree() {
   if (Date.now() - tree.at < 2_000) return;
   if (tree.syncing) return tree.syncing;
@@ -162,14 +187,16 @@ async function syncTree() {
     const fresh = [];
     let before;
     for (;;) {
-      const page = await connection.getSignaturesForAddress(poolPda, { before, until: tree.lastSig, limit: 1000 });
+      const page = await withRetry(() => connection.getSignaturesForAddress(poolPda, { before, until: tree.lastSig, limit: 1000 }));
       fresh.push(...page);
       if (page.length < 1000) break;
       before = page[page.length - 1].signature;
     }
-    const ok = fresh.filter((s) => !s.err).map((s) => s.signature);
-    for (let i = 0; i < ok.length; i += 50) {
-      const txs = await connection.getTransactions(ok.slice(i, i + 50), { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+    fresh.reverse(); // oldest first, so progress can be saved as we go
+    for (let i = 0; i < fresh.length; i += 5) {
+      const chunk = fresh.slice(i, i + 5);
+      const ok = chunk.filter((x) => !x.err).map((x) => x.signature);
+      const txs = ok.length ? await withRetry(() => connection.getTransactions(ok, { commitment: "confirmed", maxSupportedTransactionVersion: 0 })) : [];
       for (const tx of txs) {
         for (const ev of parser.parseLogs(tx?.meta?.logMessages ?? [])) {
           if (ev.name.toLowerCase() !== "newcommitments") continue;
@@ -177,17 +204,23 @@ async function syncTree() {
           ev.data.commitments.forEach((c, k) => tree.leaves.set(idx + k, Buffer.from(c).toString("hex")));
         }
       }
+      tree.lastSig = chunk[chunk.length - 1].signature;
+      saveTree();
     }
-    if (fresh.length) tree.lastSig = fresh[0].signature;
     tree.at = Date.now();
   })().finally(() => { tree.syncing = null; });
   return tree.syncing;
 }
 async function getTree() {
-  await syncTree();
+  // answer from the cache while a background sync is running
+  if (!tree.syncing || tree.leaves.size === 0) await syncTree();
   const n = tree.leaves.size;
   const leaves = Array.from({ length: n }, (_, i) => tree.leaves.get(i));
-  if (leaves.some((l) => l === undefined)) { tree.lastSig = undefined; tree.leaves.clear(); tree.at = 0; return getTree(); }
+  if (leaves.some((l) => l === undefined)) {
+    // a gap means a missed event: rebuild from scratch next time
+    tree.lastSig = undefined; tree.leaves.clear(); tree.at = 0; saveTree();
+    throw new Error("note tree is re-indexing, try again shortly");
+  }
   return { leaves, count: n };
 }
 
@@ -416,7 +449,9 @@ const server = http.createServer(async (req, res) => {
       if (url.pathname === "/") return send(res, 200, { name: "patula-relayer", version: 2 });
       if (url.pathname === "/health") return send(res, 200, await health());
       if (url.pathname === "/stats") return send(res, 200, await stats());
-      if (url.pathname === "/tree") return send(res, 200, await getTree());
+      if (url.pathname === "/tree") {
+        try { return send(res, 200, await getTree()); } catch (e) { return send(res, 503, { error: String(e?.message || e) }); }
+      }
       if (url.pathname.startsWith("/meta/")) return serveMeta(res, url.pathname.slice(6));
       if (url.pathname === "/screen") return send(res, 200, { address: url.searchParams.get("address"), blocked: denied(url.searchParams.get("address")) });
     }
@@ -456,6 +491,10 @@ const server = http.createServer(async (req, res) => {
     send(res, 500, { error: "internal error" });
   }
 });
+
+// keep the note tree warm in the background
+syncTree().catch((e) => console.error("tree sync", e?.message || e));
+setInterval(() => syncTree().catch((e) => console.error("tree sync", e?.message || e)), 8_000);
 
 server.listen(PORT, () => {
   console.log(`patula-relayer v2 on :${PORT} · ${CLUSTER} · pool ${POOL_ID.toBase58()} · relayer ${relayer.publicKey.toBase58()} · alt ${ALT_ADDRESS?.toBase58() ?? "none"}`);
