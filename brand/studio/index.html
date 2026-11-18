@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Patula brand studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter+Tight:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 24px; background: #0b0710; color: #f6f1ea; font-family: "Inter Tight", system-ui, sans-serif; }
+  h1 { font-weight: 500; letter-spacing: -0.02em; }
+  .row { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; margin: 18px 0; }
+  canvas { max-width: 100%; height: auto; border: 1px solid rgba(255,255,255,.1); border-radius: 12px; }
+  .lbl { font-size: 13px; color: #b9aec4; margin-bottom: 6px; }
+  #status { color: #ffcf5c; font-size: 14px; }
+</style>
+</head>
+<body>
+<h1>Patula brand studio</h1>
+<p id="status">Rendering…</p>
+<div id="out"></div>
+<script>
+// ---------- palette + helpers ----------
+const C = { bg: "#0b0710", bg2: "#120c1a", ink: "#f6f1ea", ink2: "#b9aec4", ink3: "#7d7189", saffron: "#ffcf5c", marigold: "#ffa62b", ember: "#ff5a2a", rose: "#ff4d8d", plum: "#6b2fbf", violet: "#b48cff" };
+function rng(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
+const loadImg = (src) => new Promise((ok, err) => { const i = new Image(); i.onload = () => ok(i); i.onerror = err; i.src = src; });
+
+function grain(ctx, w, h, amount = 10, seed = 7) {
+  const r = rng(seed);
+  const img = ctx.getImageData(0, 0, w, h), d = img.data;
+  for (let i = 0; i < d.length; i += 4) { const n = (r() - 0.5) * amount; d[i] += n; d[i + 1] += n; d[i + 2] += n; }
+  ctx.putImageData(img, 0, 0);
+}
+
+/** Fluid-looking marigold/plum field: blurred blobs + flowing ribbons. */
+function fluid(ctx, w, h, { seed = 3, focusX = 0.75, focusY = 0.45, spread = 0.55, intensity = 1 } = {}) {
+  const r = rng(seed);
+  ctx.fillStyle = C.bg; ctx.fillRect(0, 0, w, h);
+  const cols = [C.marigold, C.saffron, C.ember, C.rose, C.plum, C.plum, C.violet];
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  for (let i = 0; i < 26; i++) {
+    const x = (focusX + (r() - 0.5) * spread * 1.4) * w, y = (focusY + (r() - 0.5) * spread * 1.6) * h;
+    const rad = (0.08 + r() * 0.22) * Math.max(w, h);
+    const g = ctx.createRadialGradient(x, y, 0, x, y, rad);
+    const col = cols[Math.floor(r() * cols.length)];
+    g.addColorStop(0, col + (i % 3 === 0 ? "88" : "55"));
+    g.addColorStop(1, col + "00");
+    ctx.globalAlpha = 0.55 * intensity;
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(x, y, rad, 0, Math.PI * 2); ctx.fill();
+  }
+  // flowing ribbons (curl-like strokes)
+  ctx.filter = `blur(${Math.round(w / 220)}px)`;
+  for (let i = 0; i < 70; i++) {
+    let x = (focusX + (r() - 0.5) * spread * 1.6) * w, y = (focusY + (r() - 0.5) * spread * 1.8) * h;
+    const col = [C.saffron, C.marigold, C.rose, C.violet][Math.floor(r() * 4)];
+    ctx.strokeStyle = col; ctx.globalAlpha = (0.05 + r() * 0.12) * intensity; ctx.lineWidth = 2 + r() * w / 90;
+    ctx.beginPath(); ctx.moveTo(x, y);
+    let a = r() * Math.PI * 2;
+    for (let s = 0; s < 40; s++) {
+      a += Math.sin(x * 0.006 + seed) * 0.35 + Math.cos(y * 0.007) * 0.35;
+      x += Math.cos(a) * w / 160; y += Math.sin(a) * w / 160;
+      ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+  // vignette
+  const v = ctx.createRadialGradient(w * focusX, h * focusY, Math.min(w, h) * 0.1, w * 0.5, h * 0.5, Math.max(w, h) * 0.8);
+  v.addColorStop(0, "rgba(11,7,16,0)"); v.addColorStop(1, "rgba(11,7,16,0.85)");
+  ctx.fillStyle = v; ctx.fillRect(0, 0, w, h);
+}
+
+function gradText(ctx, x, y, w) {
+  const g = ctx.createLinearGradient(x, y, x + w, y);
+  g.addColorStop(0, C.saffron); g.addColorStop(0.45, C.marigold); g.addColorStop(0.8, C.rose); g.addColorStop(1, C.violet);
+  return g;
+}
+
+function canvas(w, h, label) {
+  const c = document.createElement("canvas"); c.width = w; c.height = h;
+  const wrap = document.createElement("div");
+  wrap.innerHTML = `<div class="lbl">${label} · ${w}×${h}</div>`; wrap.appendChild(c);
+  document.getElementById("out").appendChild(wrap);
+  return c;
+}
+async function save(c, name) {
+  await fetch("/save?name=" + name, { method: "POST", body: c.toDataURL("image/png") });
+}
+
+// ---------- assets ----------
+async function main() {
+  await document.fonts.load('400 120px "Instrument Serif"');
+  await document.fonts.load('italic 400 120px "Instrument Serif"');
+  await document.fonts.load('500 60px "Inter Tight"');
+  await document.fonts.load('600 60px "Inter Tight"');
+  const mark = await loadImg("/logo-mark.svg");
+
+  // 1. Profile picture (X shows it as a circle)
+  {
+    const S = 1000, c = canvas(S, S, "X profile picture"), x = c.getContext("2d");
+    x.fillStyle = C.bg; x.fillRect(0, 0, S, S);
+    const g = x.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S * 0.62);
+    g.addColorStop(0, "rgba(107,47,191,0.55)"); g.addColorStop(0.55, "rgba(255,90,42,0.12)"); g.addColorStop(1, "rgba(11,7,16,0)");
+    x.fillStyle = g; x.fillRect(0, 0, S, S);
+    x.shadowColor = "rgba(255,166,43,0.55)"; x.shadowBlur = 80;
+    const m = S * 0.84; x.drawImage(mark, (S - m) / 2, (S - m) / 2, m, m);
+    x.shadowBlur = 0; grain(x, S, S, 6);
+    await save(c, "x-profile-1000.png");
+  }
+
+  // 2. X header banner 1500×500 (avatar covers the bottom-left on desktop)
+  {
+    const W = 1500, H = 500, c = canvas(W, H, "X header"), x = c.getContext("2d");
+    fluid(x, W, H, { seed: 11, focusX: 0.8, focusY: 0.5, spread: 0.5 });
+    // scrim so the copy stays readable over the bright fluid
+    const sc = x.createLinearGradient(0, 0, W * 0.82, 0);
+    sc.addColorStop(0, "rgba(11,7,16,0.92)"); sc.addColorStop(0.55, "rgba(11,7,16,0.62)"); sc.addColorStop(1, "rgba(11,7,16,0)");
+    x.fillStyle = sc; x.fillRect(0, 0, W, H);
+    // large mark, partly off the right edge
+    x.save(); x.globalAlpha = 0.95; x.shadowColor = "rgba(255,120,40,0.6)"; x.shadowBlur = 90;
+    x.drawImage(mark, W - 470, H / 2 - 270, 540, 540); x.restore();
+    // headline, kept clear of the avatar zone (bottom-left)
+    const L = 420;
+    x.fillStyle = C.ink; x.font = '500 76px "Inter Tight"'; x.letterSpacing = "-3px";
+    x.fillText("Launch in the open.", L, 205);
+    x.font = 'italic 400 96px "Instrument Serif"'; x.letterSpacing = "-1px";
+    const t1 = "Or in the ", t2 = "dark.";
+    x.fillStyle = C.ink; x.fillText(t1, L, 300);
+    const w1 = x.measureText(t1).width, w2 = x.measureText(t2).width;
+    x.fillStyle = gradText(x, L + w1, 0, w2); x.fillText(t2, L + w1, 300);
+    x.letterSpacing = "3px"; x.font = '500 20px "Inter Tight"'; x.fillStyle = C.ink2;
+    x.fillText("THE PRIVACY LAUNCHPAD ON SOLANA", L + 2, 120);
+    x.fillStyle = C.marigold; x.fillRect(L + 2, 86, 34, 2);
+    x.letterSpacing = "0px"; x.font = '400 22px "Inter Tight"'; x.fillStyle = C.ink2;
+    x.fillText("Anonymous launches · Private trades · Stake to earn · Liquidity locked forever", L + 2, 360);
+    grain(x, W, H, 7, 11);
+    await save(c, "x-header-1500x500.png");
+  }
+
+  // 3. Link preview / OpenGraph 1200×630
+  {
+    const W = 1200, H = 630, c = canvas(W, H, "Link preview"), x = c.getContext("2d");
+    fluid(x, W, H, { seed: 5, focusX: 0.78, focusY: 0.42, spread: 0.55 });
+    const sc = x.createLinearGradient(0, 0, W * 0.8, 0);
+    sc.addColorStop(0, "rgba(11,7,16,0.92)"); sc.addColorStop(0.6, "rgba(11,7,16,0.6)"); sc.addColorStop(1, "rgba(11,7,16,0)");
+    x.fillStyle = sc; x.fillRect(0, 0, W, H);
+    x.save(); x.shadowColor = "rgba(255,120,40,0.6)"; x.shadowBlur = 80;
+    x.drawImage(mark, W - 470, 60, 440, 440); x.restore();
+    const L = 72;
+    x.drawImage(mark, L, 64, 56, 56);
+    x.fillStyle = C.ink; x.font = '600 34px "Inter Tight"'; x.letterSpacing = "-1px"; x.fillText("Patula", L + 70, 104);
+    x.font = '500 92px "Inter Tight"'; x.letterSpacing = "-4px"; x.fillText("Launch in", L, 300); x.fillText("the open.", L, 392);
+    x.font = 'italic 400 104px "Instrument Serif"'; x.letterSpacing = "-1px";
+    const a = "Or in the ", b = "dark.";
+    x.fillText(a, L, 492);
+    const wa = x.measureText(a).width; x.fillStyle = gradText(x, L + wa, 0, x.measureText(b).width); x.fillText(b, L + wa, 492);
+    x.letterSpacing = "0px"; x.font = '400 24px "Inter Tight"'; x.fillStyle = C.ink2;
+    x.fillText("The privacy launchpad on Solana · patula.vercel.app", L + 2, 568);
+    grain(x, W, H, 6, 5);
+    await save(c, "og-1200x630.png");
+  }
+
+  // 4. Wordmark (transparent) 1600×480
+  {
+    const W = 1600, H = 480, c = canvas(W, H, "Wordmark, transparent"), x = c.getContext("2d");
+    x.drawImage(mark, 40, 40, 400, 400);
+    x.fillStyle = C.ink; x.font = '600 250px "Inter Tight"'; x.letterSpacing = "-10px";
+    x.fillText("Patula", 480, 330);
+    await save(c, "wordmark-dark-bg-1600x480.png");
+  }
+  {
+    const W = 1600, H = 480, c = canvas(W, H, "Wordmark for light backgrounds"), x = c.getContext("2d");
+    x.drawImage(mark, 40, 40, 400, 400);
+    x.fillStyle = "#1a0f22"; x.font = '600 250px "Inter Tight"'; x.letterSpacing = "-10px";
+    x.fillText("Patula", 480, 330);
+    await save(c, "wordmark-light-bg-1600x480.png");
+  }
+
+  // 5. Mark PNGs + app icons
+  for (const [S, name, bg] of [[1024, "mark-1024.png", null], [512, "mark-512.png", null], [180, "apple-icon.png", C.bg], [512, "icon-512.png", C.bg]]) {
+    const c = canvas(S, S, name), x = c.getContext("2d");
+    if (bg) { x.fillStyle = bg; x.fillRect(0, 0, S, S); }
+    const m = bg ? S * 0.8 : S; x.drawImage(mark, (S - m) / 2, (S - m) / 2, m, m);
+    await save(c, name);
+  }
+
+  document.getElementById("status").textContent = "Done. Files saved to brand/export/.";
+}
+main().catch((e) => { document.getElementById("status").textContent = "Error: " + e; console.error(e); });
+</script>
+</body>
+</html>

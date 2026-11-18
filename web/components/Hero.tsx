@@ -7,22 +7,8 @@ import { getJSON, Health } from "@/lib/api";
 export const GITHUB = "https://github.com/carynyx80/patula";
 
 export function Logo() {
-  return (
-    <svg className="logo-mark" viewBox="0 0 32 32" aria-hidden="true">
-      <defs>
-        <linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#ffcf5c" />
-          <stop offset=".6" stopColor="#ffa62b" />
-          <stop offset="1" stopColor="#ff4d8d" />
-        </linearGradient>
-      </defs>
-      {Array.from({ length: 8 }).map((_, i) => (
-        <ellipse key={i} cx="16" cy="8.5" rx="4" ry="7.5" fill="url(#lg)" opacity={0.85}
-          transform={`rotate(${i * 45} 16 16)`} />
-      ))}
-      <circle cx="16" cy="16" r="4.2" fill="#0b0710" />
-    </svg>
-  );
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img className="logo-mark" src="/logo-mark.svg" alt="" width={28} height={28} />;
 }
 
 export function Nav() {

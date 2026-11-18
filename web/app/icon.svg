@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>Patula</title>
+  <!-- Patula = Tagetes patula, the French marigold. Two rings of petals open
+       around a dark core with a violet crescent: launched in the open,
+       traded in the dark. -->
+  <defs>
+    <radialGradient id="outer" cx="256" cy="256" r="210" gradientUnits="userSpaceOnUse">
+      <stop offset="0.22" stop-color="#ff4d3d"/>
+      <stop offset="0.55" stop-color="#ffa62b"/>
+      <stop offset="1" stop-color="#ffd46b"/>
+    </radialGradient>
+    <radialGradient id="inner" cx="256" cy="256" r="150" gradientUnits="userSpaceOnUse">
+      <stop offset="0.3" stop-color="#e2361f"/>
+      <stop offset="0.75" stop-color="#ff7a1a"/>
+      <stop offset="1" stop-color="#ffb13b"/>
+    </radialGradient>
+    <radialGradient id="crescent" cx="236" cy="246" r="44" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#c59bff"/>
+      <stop offset="1" stop-color="#6b2fbf"/>
+    </radialGradient>
+    <path id="petal" d="M256 256 C 222 196, 224 104, 256 44 C 288 104, 290 196, 256 256 Z"/>
+    <path id="petal-in" d="M256 256 C 232 214, 234 152, 256 110 C 278 152, 280 214, 256 256 Z"/>
+  </defs>
+  <g fill="url(#outer)">
+    <use href="#petal"/>
+    <use href="#petal" transform="rotate(45 256 256)"/>
+    <use href="#petal" transform="rotate(90 256 256)"/>
+    <use href="#petal" transform="rotate(135 256 256)"/>
+    <use href="#petal" transform="rotate(180 256 256)"/>
+    <use href="#petal" transform="rotate(225 256 256)"/>
+    <use href="#petal" transform="rotate(270 256 256)"/>
+    <use href="#petal" transform="rotate(315 256 256)"/>
+  </g>
+  <g fill="url(#inner)">
+    <use href="#petal-in" transform="rotate(22.5 256 256)"/>
+    <use href="#petal-in" transform="rotate(67.5 256 256)"/>
+    <use href="#petal-in" transform="rotate(112.5 256 256)"/>
+    <use href="#petal-in" transform="rotate(157.5 256 256)"/>
+    <use href="#petal-in" transform="rotate(202.5 256 256)"/>
+    <use href="#petal-in" transform="rotate(247.5 256 256)"/>
+    <use href="#petal-in" transform="rotate(292.5 256 256)"/>
+    <use href="#petal-in" transform="rotate(337.5 256 256)"/>
+  </g>
+  <circle cx="256" cy="256" r="58" fill="#0b0710"/>
+  <circle cx="256" cy="256" r="58" fill="none" stroke="#ffd46b" stroke-opacity="0.55" stroke-width="3"/>
+  <!-- crescent: a lit sliver of the hidden core -->
+  <circle cx="246" cy="250" r="34" fill="url(#crescent)"/>
+  <circle cx="262" cy="242" r="32" fill="#0b0710"/>
+</svg>
