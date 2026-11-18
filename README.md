@@ -45,3 +45,14 @@ curve SOL locked in a program vault, creator buy capped at 5%, anti-sniper cap o
 
 `npx ts-node -P tsconfig.json scripts/launchpad-devnet.ts` initialises the config and seeds a demo token.
 The web app lives at `/app` (explore), `/app/create` (launch) and `/app/t/<mint>` (trade).
+
+## Private trading (Phase 1b)
+
+- `circuits/spend.circom`: notes carry an asset (SOL or one launchpad token); value is conserved per asset, so one proof can describe a swap.
+- Pool v2 (`pool2`/`vault2` seeds): `transact`, `private_buy` and `private_sell`, which call the launchpad with the pool vault as trader.
+- Private launch: the relayer pays the fee and rent; a fresh, unfunded key is recorded as creator (`/launch/prepare` + `/launch/submit`).
+- Relayer: `/tree` (commitment indexer), `/relay/transact`, `/relay/buy`, `/relay/sell`; v0 transactions through lookup table `7tznayYqr2BMoy5u3yxb3yLMCP8gErdgksXMA724Y6xn`.
+- Web: shielded balance panel (deposit, withdraw, holdings, encrypted backup), Private toggle on token and launch pages, proofs generated in the browser from `web/public/zk`.
+- `scripts/devnet-private.ts` runs launch → deposit → buy → sell → withdraw against a relayer.
+
+Limits: trades fix their amounts in the proof, so buys pay up to a max and sells receive at least a min; price improvement goes to the relayer. Amounts and prices stay public. Notes live in the browser (export a backup).

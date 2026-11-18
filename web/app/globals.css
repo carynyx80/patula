@@ -304,3 +304,26 @@ footer { padding: 60px 0 40px; color: var(--ink-3); font-size: 14px; }
 }
 .fade-in { animation: fadeIn .6s var(--ease) both; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+
+/* shielded */
+.shield-pill { display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px; border-radius: 999px; border: 1px solid rgba(255,166,43,.35); background: rgba(255,166,43,.08); color: var(--saffron); font-size: 14px; font-variant-numeric: tabular-nums; transition: background .3s; }
+.shield-pill:hover { background: rgba(255,166,43,.16); }
+.shield-ico { font-size: 12px; }
+.drawer-bg { position: fixed; inset: 0; background: rgba(5,3,8,.6); backdrop-filter: blur(4px); z-index: 80; }
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 100%); z-index: 90; background: var(--bg-2); border-left: 1px solid var(--line-2); padding: 26px; overflow-y: auto; display: flex; flex-direction: column; gap: 18px; }
+.drawer-head { display: flex; justify-content: space-between; align-items: start; }
+.drawer-head h2 { font-size: 38px; letter-spacing: -0.03em; font-weight: 500; margin-top: 10px; font-variant-numeric: tabular-nums; }
+.drawer .x { width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--line-2); color: var(--ink-2); }
+.drawer-sec { border-top: 1px solid var(--line); padding-top: 18px; display: flex; flex-direction: column; gap: 10px; }
+.drawer-sec h4 { font-size: 15px; font-weight: 600; }
+.drawer input { font: inherit; color: var(--ink); background: rgba(0,0,0,.3); border: 1px solid var(--line-2); border-radius: 12px; padding: 11px 14px; outline: none; width: 100%; }
+.drawer input:focus { border-color: var(--marigold); }
+.drawer .row { display: flex; gap: 10px; align-items: center; }
+.small { font-size: 13px; }
+.warn { font-size: 12px; color: var(--saffron); border: 1px solid rgba(255,207,92,.25); border-radius: 12px; padding: 10px 12px; background: rgba(255,207,92,.05); }
+.holdings { list-style: none; display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+.holdings li { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.holdings a { font-family: var(--font-mono), monospace; color: var(--ink-2); }
+.spinner { display: inline-block; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--line-2); border-top-color: var(--marigold); animation: spin .8s linear infinite; vertical-align: -1px; margin-right: 6px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (max-width: 560px) { .shield-pill { padding: 0 10px; font-size: 13px; } }

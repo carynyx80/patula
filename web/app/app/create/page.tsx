@@ -7,6 +7,7 @@ import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import TokenAvatar from "@/components/app/TokenAvatar";
+import { useShielded } from "@/components/app/ShieldedProvider";
 import {
   ConfigView, configPda, curvePda, fetchConfig, getProgram, LAMPORTS, solVaultPda, vaultAta,
 } from "@/lib/solana";
@@ -22,6 +23,8 @@ export default function Create() {
   const [uri, setUri] = useState("");
   const [devBuy, setDevBuy] = useState("");
   const [busy, setBusy] = useState(false);
+  const [priv, setPriv] = useState(false);
+  const shielded = useShielded();
   const [msg, setMsg] = useState("");
   const [preview] = useState(() => Keypair.generate().publicKey.toBase58());
 
@@ -33,6 +36,19 @@ export default function Create() {
     e.preventDefault();
     if (!wallet.publicKey) return setVisible(true);
     if (!cfg) return;
+    if (priv) {
+      setBusy(true);
+      setMsg("");
+      try {
+        if (!shielded.unlocked) await shielded.unlock();
+        const { mint } = await shielded.launch(name.trim(), symbol.trim().toUpperCase(), uri.trim());
+        router.push(`/app/t/${mint}?launched=1`);
+      } catch (err) {
+        setMsg(String((err as Error)?.message || err).slice(0, 220));
+        setBusy(false);
+      }
+      return;
+    }
     setBusy(true);
     setMsg("Confirm in your wallet…");
     try {
@@ -89,18 +105,23 @@ export default function Create() {
         <label>Image URL <small>optional · direct https link to a png, jpg, gif or webp</small>
           <input value={uri} maxLength={200} onChange={(e) => setUri(e.target.value)} placeholder="https://…/logo.png" />
         </label>
-        <label>First buy <small>optional · SOL, max 1% of supply during the first ~4 seconds</small>
-          <input value={devBuy} inputMode="decimal" onChange={(e) => setDevBuy(e.target.value.replace(/[^0-9.]/g, ""))} placeholder="0.00" />
-        </label>
+        {!priv && (
+          <label>First buy <small>optional · SOL, max 1% of supply during the first ~4 seconds</small>
+            <input value={devBuy} inputMode="decimal" onChange={(e) => setDevBuy(e.target.value.replace(/[^0-9.]/g, ""))} placeholder="0.00" />
+          </label>
+        )}
         <div className="visibility">
-          <div><b>Visibility</b><small>Public: your wallet is shown as creator.</small></div>
-          <div className="toggle sm" aria-disabled>
-            <button type="button" className="active">Public</button>
-            <button type="button" disabled title="Arrives in Phase 1b">Private · soon</button>
+          <div><b>Visibility</b><small>{priv
+            ? "Private: the relayer launches it and a fresh, unlinked key is recorded as creator. Creator fees go to that key, saved in your shielded backup."
+            : "Public: your wallet is shown as creator."}</small></div>
+          <div className="toggle sm">
+            <button type="button" className={!priv ? "active" : ""} onClick={() => setPriv(false)}>Public</button>
+            <button type="button" className={priv ? "active" : ""} onClick={() => setPriv(true)}>◉ Private</button>
           </div>
         </div>
         <button className="btn btn-primary big" disabled={!valid || busy}>
-          {!wallet.publicKey ? "Connect wallet" : busy ? "Launching…" : `Launch · ${cfg ? Number(cfg.launchFee) / LAMPORTS : "…"} SOL fee`}
+          {!wallet.publicKey ? "Connect wallet" : busy ? (shielded.busy || "Launching…")
+            : priv ? "Launch anonymously · fee covered by relayer (devnet)" : `Launch · ${cfg ? Number(cfg.launchFee) / LAMPORTS : "…"} SOL fee`}
         </button>
         {msg && <p className="form-msg">{msg}</p>}
       </form>

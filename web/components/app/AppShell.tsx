@@ -4,6 +4,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import Providers from "@/components/WalletProvider";
 import { Logo } from "@/components/Hero";
+import ShieldedProvider from "./ShieldedProvider";
+import ShieldedPanel from "./ShieldedPanel";
 
 const WalletButton = dynamic(
   async () => (await import("@solana/wallet-adapter-react-ui")).WalletMultiButton,
@@ -17,6 +19,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   );
   return (
     <Providers>
+      <ShieldedProvider>
       <header className="app-head">
         <div className="wrap app-head-in">
           <Link href="/" className="logo"><Logo /> Patula</Link>
@@ -26,14 +29,16 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           </nav>
           <div className="app-head-right">
             <span className="net-badge"><span className="dot warn" /> Devnet</span>
+            <ShieldedPanel />
             <WalletButton />
           </div>
         </div>
       </header>
       <main className="app-main wrap">{children}</main>
       <footer className="app-foot wrap">
-        Prototype on Solana devnet · not audited · test SOL only. Private mode arrives in Phase 1b.
+        Prototype on Solana devnet · not audited · dev trusted setup · test SOL only.
       </footer>
+      </ShieldedProvider>
     </Providers>
   );
 }

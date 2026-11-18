@@ -1,4 +1,4 @@
-import { AnchorProvider, BorshCoder, EventParser, Program } from "@anchor-lang/core";
+import { AnchorProvider, BorshCoder, Program } from "@anchor-lang/core";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import idl from "./idl/launchpad.json";
@@ -110,10 +110,16 @@ export type TradeView = {
   tokens: number;
   price: number; // SOL per token after the trade
   time: number;
+  slot: number;
 };
 
 export async function fetchTrades(connection: Connection, mint: PublicKey, limit = 60): Promise<TradeView[]> {
-  const parser = new EventParser(LAUNCHPAD_ID, new BorshCoder(idl as never));
+  // Decode every "Program data:" line ourselves: Anchor's EventParser skips
+  // events emitted inside a CPI, which is how private trades reach the launchpad.
+  const coder = new BorshCoder(idl as never);
+  const parseLogs = (logs: string[]) =>
+    logs.filter((l) => l.startsWith("Program data: ")).map((l) => { try { return coder.events.decode(l.slice(14)); } catch { return null; } })
+      .filter((e): e is NonNullable<typeof e> => !!e);
   const sigs = (await connection.getSignaturesForAddress(curvePda(mint), { limit })).filter((s) => !s.err);
   const txs = await connection.getTransactions(sigs.map((s) => s.signature), {
     commitment: "confirmed",
@@ -122,7 +128,7 @@ export async function fetchTrades(connection: Connection, mint: PublicKey, limit
   const out: TradeView[] = [];
   txs.forEach((tx, i) => {
     if (!tx?.meta?.logMessages) return;
-    for (const ev of parser.parseLogs(tx.meta.logMessages)) {
+    for (const ev of parseLogs(tx.meta.logMessages)) {
       if (ev.name.toLowerCase() !== "trade") continue;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const d: any = ev.data;
@@ -135,11 +141,11 @@ export async function fetchTrades(connection: Connection, mint: PublicKey, limit
         tokens: Number(d.tokens.toString()) / 10 ** TOKEN_DECIMALS,
         price: priceOf(big(vs), big(vt)),
         time: Number(d.timestamp.toString()),
+        slot: tx.slot,
       });
     }
   });
-  // signatures come newest-first; reverse for chronological order (stable within a second)
-  return out.reverse();
+  return out.sort((a, b) => a.slot - b.slot); // chronological
 }
 
 // ---- pricing (mirrors programs/launchpad quote_buy / quote_sell) ----

@@ -31,7 +31,8 @@
                   112,
                   111,
                   111,
-                  108
+                  108,
+                  50
                 ]
               }
             ]
@@ -49,7 +50,8 @@
                   97,
                   117,
                   108,
-                  116
+                  116,
+                  50
                 ]
               }
             ]
@@ -68,16 +70,20 @@
       "args": []
     },
     {
-      "name": "transact",
+      "name": "private_buy",
+      "docs": [
+        "Spend SOL notes to buy exactly `tokens_out`, paying at most `max_sol`.",
+        "The proof creates the token note(s) and any SOL change."
+      ],
       "discriminator": [
-        217,
-        149,
-        130,
-        143,
-        221,
-        52,
-        252,
-        119
+        41,
+        92,
+        240,
+        69,
+        225,
+        240,
+        138,
+        82
       ],
       "accounts": [
         {
@@ -91,7 +97,8 @@
                   112,
                   111,
                   111,
-                  108
+                  108,
+                  50
                 ]
               }
             ]
@@ -109,7 +116,8 @@
                   97,
                   117,
                   108,
-                  116
+                  116,
+                  50
                 ]
               }
             ]
@@ -136,7 +144,7 @@
               },
               {
                 "kind": "arg",
-                "path": "args.input_nullifiers [0]"
+                "path": "proof.input_nullifiers [0]"
               }
             ]
           }
@@ -162,7 +170,548 @@
               },
               {
                 "kind": "arg",
-                "path": "args.input_nullifiers [1]"
+                "path": "proof.input_nullifiers [1]"
+              }
+            ]
+          }
+        },
+        {
+          "name": "relayer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "pool_token",
+          "docs": [
+            "The pool's token account for this mint. The relayer pays its rent once,",
+            "so pool funds never cover it."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "vault"
+              },
+              {
+                "kind": "const",
+                "value": [
+                  6,
+                  221,
+                  246,
+                  225,
+                  215,
+                  101,
+                  161,
+                  147,
+                  217,
+                  203,
+                  225,
+                  70,
+                  206,
+                  235,
+                  121,
+                  172,
+                  28,
+                  180,
+                  133,
+                  237,
+                  95,
+                  91,
+                  55,
+                  145,
+                  58,
+                  140,
+                  245,
+                  133,
+                  126,
+                  255,
+                  0,
+                  169
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "lp_config"
+        },
+        {
+          "name": "lp_curve",
+          "writable": true
+        },
+        {
+          "name": "lp_curve_token_vault",
+          "writable": true
+        },
+        {
+          "name": "lp_sol_vault",
+          "writable": true
+        },
+        {
+          "name": "lp_fee_recipient",
+          "writable": true
+        },
+        {
+          "name": "lp_creator",
+          "writable": true
+        },
+        {
+          "name": "launchpad_program",
+          "address": "C7eYK9wzuSWcC5daBfLB2MxXg34PNBQjMtDKcRkBdsFP"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "proof",
+          "type": {
+            "defined": {
+              "name": "Proof"
+            }
+          }
+        },
+        {
+          "name": "tokens_out",
+          "type": "u64"
+        },
+        {
+          "name": "max_sol",
+          "type": "u64"
+        },
+        {
+          "name": "fee",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "private_sell",
+      "docs": [
+        "Spend token notes to sell `tokens_in` for at least `min_sol`.",
+        "The proof creates the SOL note (min_sol - fee) and any token change."
+      ],
+      "discriminator": [
+        91,
+        99,
+        77,
+        191,
+        142,
+        178,
+        4,
+        1
+      ],
+      "accounts": [
+        {
+          "name": "pool",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108,
+                  50
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116,
+                  50
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "nullifier0",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  117,
+                  108,
+                  108,
+                  105,
+                  102,
+                  105,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "proof.input_nullifiers [0]"
+              }
+            ]
+          }
+        },
+        {
+          "name": "nullifier1",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  117,
+                  108,
+                  108,
+                  105,
+                  102,
+                  105,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "proof.input_nullifiers [1]"
+              }
+            ]
+          }
+        },
+        {
+          "name": "relayer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "pool_token",
+          "docs": [
+            "The pool's token account for this mint. The relayer pays its rent once,",
+            "so pool funds never cover it."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "vault"
+              },
+              {
+                "kind": "const",
+                "value": [
+                  6,
+                  221,
+                  246,
+                  225,
+                  215,
+                  101,
+                  161,
+                  147,
+                  217,
+                  203,
+                  225,
+                  70,
+                  206,
+                  235,
+                  121,
+                  172,
+                  28,
+                  180,
+                  133,
+                  237,
+                  95,
+                  91,
+                  55,
+                  145,
+                  58,
+                  140,
+                  245,
+                  133,
+                  126,
+                  255,
+                  0,
+                  169
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "lp_config"
+        },
+        {
+          "name": "lp_curve",
+          "writable": true
+        },
+        {
+          "name": "lp_curve_token_vault",
+          "writable": true
+        },
+        {
+          "name": "lp_sol_vault",
+          "writable": true
+        },
+        {
+          "name": "lp_fee_recipient",
+          "writable": true
+        },
+        {
+          "name": "lp_creator",
+          "writable": true
+        },
+        {
+          "name": "launchpad_program",
+          "address": "C7eYK9wzuSWcC5daBfLB2MxXg34PNBQjMtDKcRkBdsFP"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "proof",
+          "type": {
+            "defined": {
+              "name": "Proof"
+            }
+          }
+        },
+        {
+          "name": "tokens_in",
+          "type": "u64"
+        },
+        {
+          "name": "min_sol",
+          "type": "u64"
+        },
+        {
+          "name": "fee",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "transact",
+      "docs": [
+        "SOL deposit (ext_amount > 0), private transfer (= 0) or withdrawal (< 0)."
+      ],
+      "discriminator": [
+        217,
+        149,
+        130,
+        143,
+        221,
+        52,
+        252,
+        119
+      ],
+      "accounts": [
+        {
+          "name": "pool",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108,
+                  50
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116,
+                  50
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "nullifier0",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  117,
+                  108,
+                  108,
+                  105,
+                  102,
+                  105,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "proof.input_nullifiers [0]"
+              }
+            ]
+          }
+        },
+        {
+          "name": "nullifier1",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  117,
+                  108,
+                  108,
+                  105,
+                  102,
+                  105,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "proof.input_nullifiers [1]"
               }
             ]
           }
@@ -186,12 +735,20 @@
       ],
       "args": [
         {
-          "name": "args",
+          "name": "proof",
           "type": {
             "defined": {
-              "name": "TransactArgs"
+              "name": "Proof"
             }
           }
+        },
+        {
+          "name": "ext_amount",
+          "type": "i64"
+        },
+        {
+          "name": "fee",
+          "type": "u64"
         }
       ]
     }
@@ -250,6 +807,19 @@
         81,
         92
       ]
+    },
+    {
+      "name": "PrivateTradeEvent",
+      "discriminator": [
+        182,
+        212,
+        136,
+        40,
+        196,
+        197,
+        68,
+        82
+      ]
     }
   ],
   "errors": [
@@ -270,23 +840,18 @@
     },
     {
       "code": 6003,
-      "name": "InvalidPublicAmount",
-      "msg": "publicAmount does not match extAmount - fee"
-    },
-    {
-      "code": 6004,
       "name": "InvalidProof",
       "msg": "Invalid zero-knowledge proof"
     },
     {
-      "code": 6005,
-      "name": "DepositTooLarge",
-      "msg": "Deposit exceeds the per-transaction cap"
+      "code": 6004,
+      "name": "InvalidAmount",
+      "msg": "Invalid amount"
     },
     {
-      "code": 6006,
-      "name": "InvalidExtAmount",
-      "msg": "Invalid extAmount"
+      "code": 6005,
+      "name": "LimitExceeded",
+      "msg": "Trade limit exceeded"
     }
   ],
   "types": [
@@ -408,12 +973,36 @@
       }
     },
     {
-      "name": "TransactArgs",
+      "name": "PrivateTradeEvent",
       "type": {
         "kind": "struct",
         "fields": [
           {
-            "name": "proof_a",
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "is_buy",
+            "type": "bool"
+          },
+          {
+            "name": "sol",
+            "type": "u64"
+          },
+          {
+            "name": "tokens",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Proof",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "a",
             "type": {
               "array": [
                 "u8",
@@ -422,7 +1011,7 @@
             }
           },
           {
-            "name": "proof_b",
+            "name": "b",
             "type": {
               "array": [
                 "u8",
@@ -431,7 +1020,7 @@
             }
           },
           {
-            "name": "proof_c",
+            "name": "c",
             "type": {
               "array": [
                 "u8",
@@ -447,23 +1036,6 @@
                 32
               ]
             }
-          },
-          {
-            "name": "public_amount",
-            "type": {
-              "array": [
-                "u8",
-                32
-              ]
-            }
-          },
-          {
-            "name": "ext_amount",
-            "type": "i64"
-          },
-          {
-            "name": "fee",
-            "type": "u64"
           },
           {
             "name": "input_nullifiers",

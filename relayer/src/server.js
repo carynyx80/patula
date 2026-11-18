@@ -1,35 +1,39 @@
-// Patula relayer API (Phase 0).
-// - GET  /health  relayer + program status
-// - GET  /stats   Phase 0 benchmark figures + live pool state
-// - POST /relay   submit a private `transact` on the user's behalf, paying gas
+// Patula relayer API (Phase 1b).
+//   GET  /health          relayer, programs, lookup table
+//   GET  /stats           benchmark figures + live pool state
+//   GET  /tree            all note commitments in the shielded pool (for Merkle paths)
+//   POST /relay/transact  private SOL transfer / withdrawal
+//   POST /relay/buy       private buy (SOL notes -> token notes)
+//   POST /relay/sell      private sell (token notes -> SOL notes)
+//   POST /launch/prepare  build a private launch tx (relayer pays, fresh key is creator)
+//   POST /launch/submit   relayer co-signs and sends the prepared launch tx
 //
-// The relayer never sees note secrets. Recipient and fee are bound inside the
-// proof (extDataHash), so it cannot redirect funds or change its fee.
+// The relayer never sees note secrets. Amounts, recipient and its own fee are
+// bound inside each proof, so it cannot redirect funds or change its fee.
 
 import http from "node:http";
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import {
-  ComputeBudgetProgram,
-  Connection,
-  Keypair,
-  PublicKey,
-  SystemProgram,
+  ComputeBudgetProgram, Connection, Keypair, PublicKey, SystemProgram, Transaction, TransactionMessage,
+  VersionedTransaction,
 } from "@solana/web3.js";
 import anchor from "@anchor-lang/core";
 import bs58 from "bs58";
 
-const { AnchorProvider, Program, Wallet, BN } = anchor;
+const { AnchorProvider, Program, Wallet, BN, BorshCoder, EventParser } = anchor;
 
 const PORT = Number(process.env.PORT || 8080);
 const RPC_URL = process.env.RPC_URL || "https://api.devnet.solana.com";
 const CLUSTER = process.env.CLUSTER || "devnet";
-const MIN_FEE = BigInt(process.env.MIN_FEE_LAMPORTS || "2000000"); // covers nullifier rent + gas
+const MIN_FEE = BigInt(process.env.MIN_FEE_LAMPORTS || "2000000"); // covers 2 nullifier rents + gas
 const ORIGINS = (process.env.ALLOWED_ORIGINS || "*").split(",").map((s) => s.trim());
+const ALT_ADDRESS = process.env.ALT_ADDRESS ? new PublicKey(process.env.ALT_ADDRESS) : null;
 
-const idl = JSON.parse(readFileSync(new URL("../data/idl.json", import.meta.url)));
-if (process.env.PROGRAM_ID) idl.address = process.env.PROGRAM_ID;
-const PROGRAM_ID = new PublicKey(idl.address);
-const phase0 = JSON.parse(readFileSync(new URL("../data/phase0.json", import.meta.url)));
+const read = (f) => JSON.parse(readFileSync(new URL(`../data/${f}`, import.meta.url)));
+const poolIdl = read("idl.json");
+const lpIdl = read("launchpad-idl.json");
+const phase0 = read("phase0.json");
 
 function loadKeypair() {
   const raw = process.env.RELAYER_SECRET_KEY;
@@ -37,27 +41,33 @@ function loadKeypair() {
     console.warn("RELAYER_SECRET_KEY not set — using an ephemeral key (cannot pay fees).");
     return Keypair.generate();
   }
-  const bytes = raw.trim().startsWith("[") ? Uint8Array.from(JSON.parse(raw)) : bs58.decode(raw.trim());
-  return Keypair.fromSecretKey(bytes);
+  return Keypair.fromSecretKey(raw.trim().startsWith("[") ? Uint8Array.from(JSON.parse(raw)) : bs58.decode(raw.trim()));
 }
 
 const relayer = loadKeypair();
 const connection = new Connection(RPC_URL, "confirmed");
 const provider = new AnchorProvider(connection, new Wallet(relayer), { commitment: "confirmed" });
-const program = new Program(idl, provider);
-const [poolPda] = PublicKey.findProgramAddressSync([Buffer.from("pool")], PROGRAM_ID);
-const [vaultPda] = PublicKey.findProgramAddressSync([Buffer.from("vault")], PROGRAM_ID);
-const nullifierPda = (n) =>
-  PublicKey.findProgramAddressSync([Buffer.from("nullifier"), Buffer.from(n)], PROGRAM_ID)[0];
+const pool = new Program(poolIdl, provider);
+const lp = new Program(lpIdl, provider);
+const POOL_ID = pool.programId;
+const LP_ID = lp.programId;
+const pda = (prog, ...seeds) => PublicKey.findProgramAddressSync(seeds, prog)[0];
+const poolPda = pda(POOL_ID, Buffer.from("pool2"));
+const vaultPda = pda(POOL_ID, Buffer.from("vault2"));
+const lpConfig = pda(LP_ID, Buffer.from("config"));
+const nullifierPda = (n) => pda(POOL_ID, Buffer.from("nullifier"), Buffer.from(n));
+const TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+const ATA_PROGRAM = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+const ata = (mint, owner) => pda(ATA_PROGRAM, owner.toBuffer(), TOKEN_PROGRAM.toBuffer(), mint.toBuffer());
 
-// ---- tiny helpers ----------------------------------------------------------
+// ---- helpers ---------------------------------------------------------------
 
 const hits = new Map();
-function rateLimited(ip, limit = 10, windowMs = 60_000) {
+function rateLimited(key, limit, windowMs) {
   const now = Date.now();
-  const arr = (hits.get(ip) || []).filter((t) => now - t < windowMs);
+  const arr = (hits.get(key) || []).filter((t) => now - t < windowMs);
   arr.push(now);
-  hits.set(ip, arr);
+  hits.set(key, arr);
   return arr.length > limit;
 }
 
@@ -69,13 +79,8 @@ function cors(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "content-type");
 }
-
-function send(res, status, body) {
-  res.writeHead(status, { "content-type": "application/json" });
-  res.end(JSON.stringify(body));
-}
-
-async function readBody(req, max = 16_384) {
+const send = (res, status, body) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
+async function readBody(req, max = 32_768) {
   let size = 0;
   const chunks = [];
   for await (const c of req) {
@@ -85,102 +90,186 @@ async function readBody(req, max = 16_384) {
   }
   return JSON.parse(Buffer.concat(chunks).toString() || "{}");
 }
+const isBytes = (a, n) => Array.isArray(a) && a.length === n && a.every((x) => Number.isInteger(x) && x >= 0 && x < 256);
+const validProof = (p) =>
+  p && isBytes(p.a, 64) && isBytes(p.b, 128) && isBytes(p.c, 64) && isBytes(p.root, 32) &&
+  Array.isArray(p.inputNullifiers) && p.inputNullifiers.length === 2 && p.inputNullifiers.every((n) => isBytes(n, 32)) &&
+  Array.isArray(p.outputCommitments) && p.outputCommitments.length === 2 && p.outputCommitments.every((n) => isBytes(n, 32));
+const u64 = (v) => { const b = BigInt(v); if (b < 0n || b > 18446744073709551615n) throw new Error("u64 out of range"); return b; };
+const errMsg = (e) => {
+  const s = String(e?.message || e);
+  const logs = e?.logs || e?.transactionLogs;
+  const anchorErr = (logs || []).find((l) => l.includes("Error Message"));
+  return (anchorErr || s).slice(0, 400);
+};
 
-const bytes = (a, n) => Array.isArray(a) && a.length === n && a.every((x) => Number.isInteger(x) && x >= 0 && x < 256);
+let altCache = null;
+async function lookupTable() {
+  if (!ALT_ADDRESS) return [];
+  if (!altCache || Date.now() - altCache.at > 300_000) {
+    altCache = { at: Date.now(), value: (await connection.getAddressLookupTable(ALT_ADDRESS)).value };
+  }
+  return altCache.value ? [altCache.value] : [];
+}
+
+async function sendV0(ixs) {
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+  const msg = new TransactionMessage({
+    payerKey: relayer.publicKey,
+    recentBlockhash: blockhash,
+    instructions: [ComputeBudgetProgram.setComputeUnitLimit({ units: 600_000 }), ...ixs],
+  }).compileToV0Message(await lookupTable());
+  const tx = new VersionedTransaction(msg);
+  tx.sign([relayer]);
+  const sig = await connection.sendTransaction(tx, { maxRetries: 3 });
+  await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+  return sig;
+}
 
 let deployedCache = { at: 0, value: false };
-async function programDeployed() {
+async function poolReady() {
   if (Date.now() - deployedCache.at < 30_000) return deployedCache.value;
-  const info = await connection.getAccountInfo(PROGRAM_ID).catch(() => null);
-  deployedCache = { at: Date.now(), value: !!info?.executable };
+  const info = await connection.getAccountInfo(poolPda).catch(() => null);
+  deployedCache = { at: Date.now(), value: !!info };
   return deployedCache.value;
+}
+
+// ---- commitment tree indexer -----------------------------------------------
+
+const parser = new EventParser(POOL_ID, new BorshCoder(poolIdl));
+const tree = { leaves: new Map(), lastSig: undefined, at: 0, syncing: null };
+async function syncTree() {
+  if (Date.now() - tree.at < 2_000) return;
+  if (tree.syncing) return tree.syncing;
+  tree.syncing = (async () => {
+    const fresh = [];
+    let before;
+    for (;;) {
+      const page = await connection.getSignaturesForAddress(poolPda, { before, until: tree.lastSig, limit: 1000 });
+      fresh.push(...page);
+      if (page.length < 1000) break;
+      before = page[page.length - 1].signature;
+    }
+    const ok = fresh.filter((s) => !s.err).map((s) => s.signature);
+    for (let i = 0; i < ok.length; i += 50) {
+      const txs = await connection.getTransactions(ok.slice(i, i + 50), { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+      for (const tx of txs) {
+        for (const ev of parser.parseLogs(tx?.meta?.logMessages ?? [])) {
+          if (ev.name.toLowerCase() !== "newcommitments") continue;
+          const idx = Number(ev.data.index.toString());
+          ev.data.commitments.forEach((c, k) => tree.leaves.set(idx + k, Buffer.from(c).toString("hex")));
+        }
+      }
+    }
+    if (fresh.length) tree.lastSig = fresh[0].signature;
+    tree.at = Date.now();
+  })().finally(() => { tree.syncing = null; });
+  return tree.syncing;
+}
+async function getTree() {
+  await syncTree();
+  const n = tree.leaves.size;
+  const leaves = Array.from({ length: n }, (_, i) => tree.leaves.get(i));
+  if (leaves.some((l) => l === undefined)) { tree.lastSig = undefined; tree.leaves.clear(); tree.at = 0; return getTree(); }
+  return { leaves, count: n };
 }
 
 // ---- routes ----------------------------------------------------------------
 
 async function health() {
-  const [deployed, balance] = await Promise.all([
-    programDeployed(),
-    connection.getBalance(relayer.publicKey).catch(() => 0),
-  ]);
+  const [ready, balance] = await Promise.all([poolReady(), connection.getBalance(relayer.publicKey).catch(() => 0)]);
   return {
-    ok: true,
-    cluster: CLUSTER,
-    programId: PROGRAM_ID.toBase58(),
-    programDeployed: deployed,
-    relayer: relayer.publicKey.toBase58(),
-    relayerBalanceSol: balance / 1e9,
-    minFeeLamports: MIN_FEE.toString(),
+    ok: true, cluster: CLUSTER, programId: POOL_ID.toBase58(), launchpadId: LP_ID.toBase58(),
+    programDeployed: ready, relayer: relayer.publicKey.toBase58(), relayerBalanceSol: balance / 1e9,
+    minFeeLamports: MIN_FEE.toString(), altAddress: ALT_ADDRESS?.toBase58() ?? null, poolVersion: 2,
   };
 }
 
 async function stats() {
-  let pool = null;
-  if (await programDeployed()) {
+  let poolState = null;
+  if (await poolReady()) {
     try {
-      const p = await program.account.pool.fetch(poolPda);
-      pool = {
-        deposits: p.nextIndex.toNumber() / 2,
-        root: Buffer.from(p.roots[p.currentRootIndex.toNumber()]).toString("hex"),
-      };
-    } catch {
-      pool = null; // pool not initialised yet
-    }
+      const p = await pool.account.pool.fetch(poolPda);
+      poolState = { notes: p.nextIndex.toNumber(), deposits: p.nextIndex.toNumber() / 2, root: Buffer.from(p.roots[p.currentRootIndex.toNumber()]).toString("hex") };
+    } catch { /* not initialised */ }
   }
   return {
     phase0: phase0.map(({ tx, proveMs, computeUnits, txBytes }) => ({ tx, proveMs, computeUnits, txBytes })),
-    constraints: 26784,
-    testsPassed: 6,
-    testsTotal: 6,
-    pool,
+    constraints: 27371, testsPassed: 16, testsTotal: 16, pool: poolState,
   };
 }
 
-async function relay(body) {
-  const { args, recipient } = body || {};
-  if (!args || typeof recipient !== "string") return [400, { error: "args and recipient required" }];
-  const ok =
-    bytes(args.proofA, 64) && bytes(args.proofB, 128) && bytes(args.proofC, 64) &&
-    bytes(args.root, 32) && bytes(args.publicAmount, 32) &&
-    Array.isArray(args.inputNullifiers) && args.inputNullifiers.length === 2 && args.inputNullifiers.every((n) => bytes(n, 32)) &&
-    Array.isArray(args.outputCommitments) && args.outputCommitments.length === 2 && args.outputCommitments.every((n) => bytes(n, 32));
-  if (!ok) return [400, { error: "malformed proof arguments" }];
+const nullifierAccounts = (proof) => ({ nullifier0: nullifierPda(proof.inputNullifiers[0]), nullifier1: nullifierPda(proof.inputNullifiers[1]) });
 
-  let fee, extAmount, recipientKey;
-  try {
-    fee = BigInt(args.fee);
-    extAmount = BigInt(args.extAmount);
-    recipientKey = new PublicKey(recipient);
-  } catch {
-    return [400, { error: "invalid fee, extAmount or recipient" }];
-  }
+async function relayTransact(b) {
+  if (!validProof(b.proof) || typeof b.recipient !== "string") return [400, { error: "malformed request" }];
+  const ext = BigInt(b.extAmount), fee = u64(b.fee);
+  if (ext > 0n) return [400, { error: "deposits are signed by the depositor, not relayed" }];
   if (fee < MIN_FEE) return [400, { error: `fee must be at least ${MIN_FEE} lamports` }];
-  if (extAmount > 0n) return [400, { error: "deposits are signed by the depositor, not relayed" }];
-  if (!(await programDeployed())) return [503, { error: `program not deployed on ${CLUSTER}` }];
+  const ix = await pool.methods.transact(b.proof, new BN(ext.toString()), new BN(fee.toString()))
+    .accountsPartial({ pool: poolPda, vault: vaultPda, ...nullifierAccounts(b.proof), signer: relayer.publicKey, recipient: new PublicKey(b.recipient) })
+    .instruction();
+  return [200, { signature: await sendV0([ix]) }];
+}
 
-  try {
-    const sig = await program.methods
-      .transact({
-        ...args,
-        extAmount: new BN(extAmount.toString()),
-        fee: new BN(fee.toString()),
-      })
-      .accountsPartial({
-        pool: poolPda,
-        vault: vaultPda,
-        nullifier0: nullifierPda(args.inputNullifiers[0]),
-        nullifier1: nullifierPda(args.inputNullifiers[1]),
-        signer: relayer.publicKey,
-        recipient: recipientKey,
-        systemProgram: SystemProgram.programId,
-      })
-      .preInstructions([ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 })])
-      .rpc();
-    return [200, { signature: sig }];
-  } catch (e) {
-    const msg = String(e?.message || e);
-    return [422, { error: "transaction rejected", detail: msg.slice(0, 400) }];
-  }
+async function tradeAccounts(mint) {
+  const curve = pda(LP_ID, Buffer.from("curve"), mint.toBuffer());
+  const c = await lp.account.curve.fetch(curve);
+  const cfg = await lp.account.config.fetch(lpConfig);
+  return {
+    mint, poolToken: ata(mint, vaultPda), lpConfig, lpCurve: curve, lpCurveTokenVault: ata(mint, curve),
+    lpSolVault: pda(LP_ID, Buffer.from("sol_vault"), mint.toBuffer()), lpFeeRecipient: cfg.feeRecipient,
+    lpCreator: c.creator, launchpadProgram: LP_ID,
+  };
+}
+
+async function relayTrade(b, side) {
+  if (!validProof(b.proof) || typeof b.mint !== "string") return [400, { error: "malformed request" }];
+  const fee = u64(b.fee);
+  if (fee < MIN_FEE) return [400, { error: `fee must be at least ${MIN_FEE} lamports` }];
+  const mint = new PublicKey(b.mint);
+  const amount = u64(side === "buy" ? b.tokensOut : b.tokensIn);
+  const limit = u64(side === "buy" ? b.maxSol : b.minSol);
+  const accts = { pool: poolPda, vault: vaultPda, ...nullifierAccounts(b.proof), relayer: relayer.publicKey, ...(await tradeAccounts(mint)) };
+  const m = side === "buy" ? pool.methods.privateBuy : pool.methods.privateSell;
+  const ix = await m(b.proof, new BN(amount.toString()), new BN(limit.toString()), new BN(fee.toString())).accountsPartial(accts).instruction();
+  return [200, { signature: await sendV0([ix]) }];
+}
+
+const pendingLaunches = new Map(); // message hash -> expiry
+async function launchPrepare(b) {
+  const name = String(b.name || "").trim(), symbol = String(b.symbol || "").trim().toUpperCase(), uri = String(b.uri || "").trim();
+  if (!name || name.length > 32 || !symbol || symbol.length > 10 || uri.length > 200) return [400, { error: "name 1-32, symbol 1-10, uri up to 200 chars" }];
+  const creator = new PublicKey(b.creator), mint = new PublicKey(b.mint);
+  const cfg = await lp.account.config.fetch(lpConfig);
+  const curve = pda(LP_ID, Buffer.from("curve"), mint.toBuffer());
+  const rent = await connection.getMinimumBalanceForRentExemption(0);
+  const ix = await lp.methods.createToken(name, symbol, uri)
+    .accountsPartial({
+      config: lpConfig, payer: relayer.publicKey, creator, mint, curve, curveTokenVault: ata(mint, curve),
+      solVault: pda(LP_ID, Buffer.from("sol_vault"), mint.toBuffer()), feeRecipient: cfg.feeRecipient,
+    }).instruction();
+  const { blockhash } = await connection.getLatestBlockhash();
+  const tx = new Transaction({ feePayer: relayer.publicKey, recentBlockhash: blockhash })
+    // fund the fresh creator key's rent so creator fees can land in it
+    .add(SystemProgram.transfer({ fromPubkey: relayer.publicKey, toPubkey: creator, lamports: rent }))
+    .add(ix);
+  const msg = tx.serializeMessage();
+  pendingLaunches.set(createHash("sha256").update(msg).digest("hex"), Date.now() + 90_000);
+  return [200, { tx: tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64") }];
+}
+
+async function launchSubmit(b) {
+  const tx = Transaction.from(Buffer.from(String(b.tx || ""), "base64"));
+  const key = createHash("sha256").update(tx.serializeMessage()).digest("hex");
+  const exp = pendingLaunches.get(key);
+  if (!exp || exp < Date.now()) return [400, { error: "unknown or expired launch; prepare again" }];
+  pendingLaunches.delete(key);
+  tx.partialSign(relayer);
+  if (!tx.verifySignatures()) return [400, { error: "missing creator or mint signature" }];
+  const sig = await connection.sendRawTransaction(tx.serialize(), { maxRetries: 3 });
+  await connection.confirmTransaction(sig, "confirmed");
+  return [200, { signature: sig }];
 }
 
 const server = http.createServer(async (req, res) => {
@@ -189,13 +278,33 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
   const ip = (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").toString().split(",")[0];
   try {
-    if (req.method === "GET" && url.pathname === "/") return send(res, 200, { name: "patula-relayer", endpoints: ["/health", "/stats", "POST /relay"] });
-    if (req.method === "GET" && url.pathname === "/health") return send(res, 200, await health());
-    if (req.method === "GET" && url.pathname === "/stats") return send(res, 200, await stats());
-    if (req.method === "POST" && url.pathname === "/relay") {
-      if (rateLimited(ip)) return send(res, 429, { error: "slow down" });
-      const [status, body] = await relay(await readBody(req));
-      return send(res, status, body);
+    if (req.method === "GET") {
+      if (url.pathname === "/") return send(res, 200, { name: "patula-relayer", version: 2 });
+      if (url.pathname === "/health") return send(res, 200, await health());
+      if (url.pathname === "/stats") return send(res, 200, await stats());
+      if (url.pathname === "/tree") return send(res, 200, await getTree());
+    }
+    if (req.method === "POST") {
+      const routes = {
+        "/relay/transact": [relayTransact, 20],
+        "/relay": [relayTransact, 20], // v1 path
+        "/relay/buy": [(b) => relayTrade(b, "buy"), 20],
+        "/relay/sell": [(b) => relayTrade(b, "sell"), 20],
+        "/launch/prepare": [launchPrepare, 5],
+        "/launch/submit": [launchSubmit, 5],
+      };
+      const r = routes[url.pathname];
+      if (r) {
+        const [fn, perMin] = r;
+        if (rateLimited(ip + url.pathname, perMin, 60_000)) return send(res, 429, { error: "slow down" });
+        if (!(await poolReady())) return send(res, 503, { error: `pool not deployed on ${CLUSTER}` });
+        try {
+          const [status, body] = await fn(await readBody(req));
+          return send(res, status, body);
+        } catch (e) {
+          return send(res, 422, { error: "rejected", detail: errMsg(e) });
+        }
+      }
     }
     send(res, 404, { error: "not found" });
   } catch (e) {
@@ -205,5 +314,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`patula-relayer on :${PORT} · ${CLUSTER} · program ${PROGRAM_ID.toBase58()} · relayer ${relayer.publicKey.toBase58()}`);
+  console.log(`patula-relayer v2 on :${PORT} · ${CLUSTER} · pool ${POOL_ID.toBase58()} · relayer ${relayer.publicKey.toBase58()} · alt ${ALT_ADDRESS?.toBase58() ?? "none"}`);
 });

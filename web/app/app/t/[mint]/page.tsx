@@ -9,6 +9,7 @@ import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import TokenAvatar from "@/components/app/TokenAvatar";
+import { useShielded } from "@/components/app/ShieldedProvider";
 import {
   ConfigView, CurveView, TradeView, configPda, curvePda, explorer, fetchConfig, fetchCurve, fetchTrades,
   fmtPrice, fmtSol, getProgram, LAMPORTS, priceOf, progressOf, quoteBuy, quoteSell, short, solVaultPda,
@@ -51,6 +52,8 @@ function TokenPage() {
   const [checks, setChecks] = useState<{ supply: boolean; noMint: boolean; noFreeze: boolean } | null>(null);
   const [bal, setBal] = useState<{ sol: number; tokens: bigint }>({ sol: 0, tokens: 0n });
   const [side, setSide] = useState<"buy" | "sell">("buy");
+  const [mode, setMode] = useState<"public" | "private">("public");
+  const shielded = useShielded();
   const [amount, setAmount] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ text: string; sig?: string } | null>(
@@ -105,6 +108,7 @@ function TokenPage() {
   async function trade() {
     if (!wallet.publicKey) return setVisible(true);
     if (!quote || !curve || !cfg || !mint) return;
+    if (mode === "private") return tradePrivate();
     setBusy(true);
     setMsg({ text: "Confirm in your wallet…" });
     try {
@@ -145,6 +149,41 @@ function TokenPage() {
     }
   }
 
+  async function tradePrivate() {
+    if (!shielded.unlocked) {
+      try { await shielded.unlock(); } catch (e) { setMsg({ text: String((e as Error)?.message || e) }); }
+      return;
+    }
+    if (!curve || !cfg || !mint) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      let sig: string;
+      if (side === "buy") {
+        const maxSol = BigInt(Math.round(amt * LAMPORTS));
+        // size the exact token amount so it costs ~1% under the max; the rest is slippage room
+        const tokensOut = quoteBuy(curve, cfg, (maxSol * 99n) / 100n).tokensOut;
+        sig = await shielded.buy(mint.toBase58(), tokensOut, maxSol);
+        setMsg({ text: "Bought privately. Your tokens are in your shielded balance.", sig });
+      } else {
+        const tokensIn = BigInt(Math.round(amt * 10 ** TOKEN_DECIMALS));
+        const minSol = (quoteSell(curve, cfg, tokensIn).solOut * 99n) / 100n;
+        sig = await shielded.sell(mint.toBase58(), tokensIn, minSol);
+        setMsg({ text: "Sold privately. SOL is in your shielded balance.", sig });
+      }
+      setAmount("");
+      await load();
+    } catch (e) {
+      const s = String((e as Error)?.message || e);
+      setMsg({ text: /Slippage|LimitExceeded/.test(s) ? "Price moved more than 1%. Try again."
+        : /SniperCap|Anti-sniper/.test(s) ? "Too big for the anti-sniper window (1% of supply per trade). Wait a few seconds."
+        : s.slice(0, 220) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const priv = mode === "private";
   const tokensFmt = (b: bigint) => (Number(b) / 10 ** TOKEN_DECIMALS).toLocaleString(undefined, { maximumFractionDigits: 2 });
 
   return (
@@ -188,9 +227,12 @@ function TokenPage() {
               <b>{side === "buy" ? "SOL" : curve.symbol}</b>
             </div>
             <small className="muted">
-              Balance: {side === "buy" ? `${fmtSol(bal.sol)} SOL` : `${tokensFmt(bal.tokens)} ${curve.symbol}`}
-              {side === "sell" && bal.tokens > 0n && (
-                <button type="button" className="link" onClick={() => setAmount((Number(bal.tokens) / 10 ** TOKEN_DECIMALS).toString())}>Max</button>
+              {priv ? "Shielded: " : "Balance: "}
+              {priv && !shielded.unlocked ? "locked" : side === "buy"
+                ? `${fmtSol(priv ? Number(shielded.solBalance) / LAMPORTS : bal.sol)} SOL`
+                : `${tokensFmt(priv ? shielded.tokenBalance(curve.mint) : bal.tokens)} ${curve.symbol}`}
+              {side === "sell" && (priv ? shielded.tokenBalance(curve.mint) : bal.tokens) > 0n && (
+                <button type="button" className="link" onClick={() => setAmount((Number(priv ? shielded.tokenBalance(curve.mint) : bal.tokens) / 10 ** TOKEN_DECIMALS).toString())}>Max</button>
               )}
             </small>
           </label>
@@ -205,14 +247,21 @@ function TokenPage() {
               ? `${tokensFmt((quote as ReturnType<typeof quoteBuy>).tokensOut)} ${curve.symbol}`
               : `${fmtSol(Number((quote as ReturnType<typeof quoteSell>).solOut) / LAMPORTS, 6)} SOL`}</b>
           </div>
-          <div className="quote muted"><span>Fees</span><span>1% (0.7% platform · 0.3% creator) · 2% max slippage</span></div>
+          <div className="quote muted"><span>Fees</span><span>1% trade fee · {priv ? `+${fmtSol(Number(shielded.relayerFee) / LAMPORTS)} SOL relayer · 1% slippage room` : "2% max slippage"}</span></div>
+          {priv && side === "buy" && amt > 0 && <div className="quote muted"><span>Max cost</span><span>{fmtSol(amt + Number(shielded.relayerFee) / LAMPORTS, 6)} SOL from your shielded balance</span></div>}
           <div className="visibility compact">
             <span>Trade as</span>
-            <div className="toggle sm"><button className="active">Public</button><button disabled title="Arrives in Phase 1b">Private · soon</button></div>
+            <div className="toggle sm">
+              <button className={!priv ? "active" : ""} onClick={() => setMode("public")}>Public</button>
+              <button className={priv ? "active" : ""} onClick={() => setMode("private")}>◉ Private</button>
+            </div>
           </div>
-          <button className="btn btn-primary big" disabled={busy || curve.complete || (!!wallet.publicKey && !quote)} onClick={trade}>
-            {!wallet.publicKey ? "Connect wallet" : curve.complete ? "Graduated" : busy ? "Working…" : side === "buy" ? `Buy ${curve.symbol}` : `Sell ${curve.symbol}`}
+          <button className="btn btn-primary big" disabled={busy || curve.complete || (!!wallet.publicKey && !quote && !(priv && !shielded.unlocked))} onClick={trade}>
+            {!wallet.publicKey ? "Connect wallet" : curve.complete ? "Graduated" : busy ? (shielded.busy || "Working…")
+              : priv && !shielded.unlocked ? "Unlock private balance"
+              : `${priv ? "Privately " : ""}${side === "buy" ? "buy" : "sell"} ${curve.symbol}`}
           </button>
+          {priv && <p className="muted small">Private trades are submitted by the relayer from the shielded pool. Your wallet never appears; the amount and price are still public.</p>}
           {msg && (
             <p className="form-msg">{msg.text} {msg.sig && <a href={explorer("tx", msg.sig)} target="_blank" rel="noreferrer">View ↗</a>}</p>
           )}
@@ -225,7 +274,9 @@ function TokenPage() {
           <ul className="feed-list auto">
             {[...trades].reverse().map((t) => (
               <li key={t.sig} className="feed-row fade-in">
-                <a className="addr" href={explorer("tx", t.sig)} target="_blank" rel="noreferrer">{short(t.trader)}</a>
+                <a className={`addr ${t.trader === shielded.vaultPda ? "private" : ""}`} href={explorer("tx", t.sig)} target="_blank" rel="noreferrer">
+                  {t.trader === shielded.vaultPda ? "◉ Private trader" : short(t.trader)}
+                </a>
                 <span className={t.isBuy ? "side-buy" : "side-sell"}>{t.isBuy ? "buy" : "sell"}</span>
                 <span className="amt">{fmtSol(t.sol)} SOL</span>
               </li>
