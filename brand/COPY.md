@@ -37,19 +37,27 @@ returns, and no "audited" or "safe" claims until the audits exist.
 
 ## Token bio
 
-For a Patula community token. The launch form allows 500 characters.
+For $PATULA. Matches the Token section on the site: staking is live at launch, buybacks come with mainnet.
 
-**$PATULA, full** *(404 characters)*
+**Full** *(440 characters; fits the 500-character launch form)*
 
-> The marigold of Solana. 🌼 $PATULA is the community token of Patula, the launchpad where creators and traders choose
-> for every action whether their wallet is seen. Launched on Patula with the same rules as every token here: 1B fixed
-> supply, minting revoked, no freeze authority, liquidity locked forever at graduation. Half of the trading fee goes to
-> holders who stake. Anonymous people, verifiable rules.
+> $PATULA is the community token of Patula, the privacy launchpad on Solana, where creators and traders choose for
+> every action whether their wallet is seen. 🌼 It powers the ecosystem: stake it to earn a share of every $PATULA
+> trade in SOL, and with mainnet, launchers can take their creator fees as $PATULA bought on the open market. Fixed 1B
+> supply, minting revoked, no freeze, liquidity locked forever. Anonymous people, verifiable rules.
 
-**$PATULA, short** *(138 characters, for listings and DEX profiles)*
+**Medium** *(170 characters; DEX profiles, CoinGecko-style listings)*
 
-> The community token of Patula, the privacy launchpad on Solana. Fixed supply, locked liquidity, and stakers earn a
-> share of every trade. 🌼
+> The community token of Patula, the privacy launchpad on Solana. 🌼 Stake $PATULA to earn a share of every trade in
+> SOL. Fixed supply, no freeze, liquidity locked forever.
+
+**Short** *(116 characters; fits an X bio for a token account)*
+
+> The marigold of Solana 🌼 Community token of Patula, the privacy launchpad. Stake to earn. Liquidity locked forever.
+
+**One-liner** *(74 characters)*
+
+> $PATULA: the token that powers Patula, the privacy launchpad on Solana. 🌼
 
 **Suggested launch settings for $PATULA:** 1% buy fee, 1% sell fee, 50% of the fee to stakers. Public creator, so the
 team is accountable for its own token.
