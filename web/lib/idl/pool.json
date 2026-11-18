@@ -293,6 +293,10 @@
           "writable": true
         },
         {
+          "name": "lp_rewards",
+          "writable": true
+        },
+        {
           "name": "lp_fee_recipient",
           "writable": true
         },
@@ -302,7 +306,7 @@
         },
         {
           "name": "launchpad_program",
-          "address": "C7eYK9wzuSWcC5daBfLB2MxXg34PNBQjMtDKcRkBdsFP"
+          "address": "3yiXiMT2GYNVAjvas5KNFpHvijTj823AA9DsuhWVo3BQ"
         },
         {
           "name": "token_program",
@@ -564,6 +568,10 @@
           "writable": true
         },
         {
+          "name": "lp_rewards",
+          "writable": true
+        },
+        {
           "name": "lp_fee_recipient",
           "writable": true
         },
@@ -573,7 +581,7 @@
         },
         {
           "name": "launchpad_program",
-          "address": "C7eYK9wzuSWcC5daBfLB2MxXg34PNBQjMtDKcRkBdsFP"
+          "address": "3yiXiMT2GYNVAjvas5KNFpHvijTj823AA9DsuhWVo3BQ"
         },
         {
           "name": "token_program",

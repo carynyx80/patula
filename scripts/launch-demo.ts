@@ -1,10 +1,10 @@
-// Launch tokens with full metadata on devnet: one public (deployer is creator,
-// with a first buy) and one anonymous (via the relayer).
+// Devnet demo for launchpad v2: launch a token with full metadata and creator
+// fees, trade it, stake, trade again, and claim the holders fee.
 // Usage: RELAYER_URL=https://... npx ts-node -P tsconfig.json scripts/launch-demo.ts
 import * as anchor from "@anchor-lang/core";
 import { BN, Program } from "@anchor-lang/core";
-import { Connection, Keypair, PublicKey, Transaction } from "@solana/web3.js";
-import { getAssociatedTokenAddressSync } from "@solana/spl-token";
+import { Connection, Keypair, PublicKey, SystemProgram, Transaction, sendAndConfirmTransaction } from "@solana/web3.js";
+import { getAccount, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { readFileSync } from "fs";
 import { deflateSync } from "zlib";
 
@@ -19,11 +19,9 @@ function png(w: number, h: number, c1: number[], c2: number[]) {
   const chunk = (t: string, d: Buffer) => { const l = Buffer.alloc(4); l.writeUInt32BE(d.length); const td = Buffer.concat([Buffer.from(t), d]); const cr = Buffer.alloc(4); cr.writeUInt32BE(crc(td)); return Buffer.concat([l, td, cr]); };
   const raw = Buffer.alloc((w * 3 + 1) * h);
   for (let y = 0; y < h; y++) {
-    raw[y * (w * 3 + 1)] = 0;
     for (let x = 0; x < w; x++) {
       const dx = x - w / 2, dy = y - h / 2, r = Math.sqrt(dx * dx + dy * dy) / (w / 2);
-      const petals = 0.5 + 0.5 * Math.cos(Math.atan2(dy, dx) * 8);
-      const t = Math.min(1, r * (0.75 + 0.35 * petals));
+      const t = Math.min(1, r * (0.75 + 0.35 * (0.5 + 0.5 * Math.cos(Math.atan2(dy, dx) * 8))));
       for (let k = 0; k < 3; k++) raw[y * (w * 3 + 1) + 1 + x * 3 + k] = Math.round(c1[k] * (1 - t) + c2[k] * t);
     }
   }
@@ -32,47 +30,58 @@ function png(w: number, h: number, c1: number[], c2: number[]) {
 }
 const dataUrl = (b: Buffer) => "data:image/png;base64," + b.toString("base64");
 
-async function post(path: string, body: unknown) {
-  const r = await fetch(RELAYER + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-  const j: any = await r.json();
-  if (!r.ok) throw new Error(`${path}: ${JSON.stringify(j)}`);
-  return j;
-}
-
 async function main() {
   const idl = JSON.parse(readFileSync("target/idl/launchpad.json", "utf8"));
   const lp = new Program(idl, new anchor.AnchorProvider(conn, new anchor.Wallet(deployer), { commitment: "confirmed" })) as any;
-  const pda = (s: string, k?: PublicKey) => PublicKey.findProgramAddressSync([Buffer.from(s), ...(k ? [k.toBuffer()] : [])], lp.programId)[0];
+  const pda = (s: string, ...k: PublicKey[]) => PublicKey.findProgramAddressSync([Buffer.from(s), ...k.map((x) => x.toBuffer())], lp.programId)[0];
   const cfg = await lp.account.config.fetch(pda("config"));
 
-  // public launch with full metadata + bundled first buy
-  const meta = await post("/metadata", {
-    name: "Golden Hour", symbol: "GOLD",
-    description: "A marigold for every trader. Launched in the open on Patula's devnet launchpad, with fixed supply and locked liquidity.",
-    website: "https://patula.vercel.app", twitter: "@solana", telegram: "t.me/solana",
-    image: dataUrl(png(512, 512, [255, 214, 120], [150, 50, 200])), banner: dataUrl(png(900, 300, [255, 170, 60], [40, 20, 60])),
+  const r = await fetch(RELAYER + "/metadata", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      name: "Golden Hour", symbol: "GOLD",
+      description: "A marigold for every trader. 2% buy and 3% sell fee, and half of it goes to holders who stake. Liquidity locks forever at graduation.",
+      website: "https://patula.vercel.app", twitter: "@solana", telegram: "t.me/solana",
+      image: dataUrl(png(512, 512, [255, 214, 120], [150, 50, 200])), banner: dataUrl(png(900, 300, [255, 170, 60], [40, 20, 60])),
+    }),
   });
-  console.log("metadata:", meta.uri);
+  const meta: any = await r.json();
+  if (!r.ok) throw new Error(JSON.stringify(meta));
+
   const mint = Keypair.generate();
   const curve = pda("curve", mint.publicKey);
-  const accts = { config: pda("config"), curve, mint: mint.publicKey, curveTokenVault: getAssociatedTokenAddressSync(mint.publicKey, curve, true), solVault: pda("sol_vault", mint.publicKey), feeRecipient: cfg.feeRecipient };
-  const sig = await lp.methods.createToken("Golden Hour", "GOLD", meta.uri)
-    .accountsPartial({ ...accts, payer: deployer.publicKey, creator: deployer.publicKey })
-    .postInstructions([await lp.methods.buy(new BN(2_000_000), new BN(0)).accountsPartial({ ...accts, buyer: deployer.publicKey, creator: deployer.publicKey }).instruction()])
+  const accts = {
+    config: pda("config"), curve, mint: mint.publicKey, curveTokenVault: getAssociatedTokenAddressSync(mint.publicKey, curve, true),
+    solVault: pda("sol_vault", mint.publicKey), rewards: pda("rewards", mint.publicKey), feeRecipient: cfg.feeRecipient, creator: deployer.publicKey,
+  };
+  const fees = { buyFeeBps: 200, sellFeeBps: 300, holderShareBps: 5000 };
+  await lp.methods.createToken("Golden Hour", "GOLD", meta.uri, fees)
+    .accountsPartial({ ...accts, payer: deployer.publicKey })
+    .postInstructions([await lp.methods.buy(new BN(2_000_000), new BN(0)).accountsPartial({ ...accts, buyer: deployer.publicKey }).instruction()])
     .signers([mint]).rpc();
-  console.log("public launch GOLD:", mint.publicKey.toBase58(), sig);
+  console.log("GOLD:", mint.publicKey.toBase58());
 
-  // anonymous launch with metadata
-  const meta2 = await post("/metadata", {
-    name: "Moonlit Petal", symbol: "PETAL", description: "Launched anonymously: the creator is a fresh key with no history. Trade it privately from your shielded balance.",
-    discord: "discord.gg/solana", image: dataUrl(png(512, 512, [255, 120, 170], [30, 20, 80])),
-  });
-  const creator = Keypair.generate(), m2 = Keypair.generate();
-  const prep = await post("/launch/prepare", { name: "Moonlit Petal", symbol: "PETAL", uri: meta2.uri, creator: creator.publicKey.toBase58(), mint: m2.publicKey.toBase58() });
-  const tx = Transaction.from(Buffer.from(prep.tx, "base64"));
-  tx.partialSign(m2, creator);
-  const sub = await post("/launch/submit", { tx: tx.serialize({ requireAllSignatures: false }).toString("base64") });
-  console.log("anonymous launch PETAL:", m2.publicKey.toBase58(), sub.signature);
+  // a separate trader, then the creator stakes and the trader buys again
+  const trader = Keypair.generate();
+  await sendAndConfirmTransaction(conn, new Transaction().add(SystemProgram.transfer({ fromPubkey: deployer.publicKey, toPubkey: trader.publicKey, lamports: 150_000_000 })), [deployer]);
+  await new Promise((res) => setTimeout(res, 6000));
+  const tp = new Program(idl, new anchor.AnchorProvider(conn, new anchor.Wallet(trader), { commitment: "confirmed" })) as any;
+  await tp.methods.buy(new BN(40_000_000), new BN(0)).accountsPartial({ ...accts, buyer: trader.publicKey }).rpc();
+  const myTokens = (await getAccount(conn, getAssociatedTokenAddressSync(mint.publicKey, deployer.publicKey))).amount;
+  const stakeAccts = {
+    curve, mint: mint.publicKey, position: pda("stake", mint.publicKey, deployer.publicKey), stakeVault: pda("stake_vault", mint.publicKey),
+    ownerToken: getAssociatedTokenAddressSync(mint.publicKey, deployer.publicKey), rewards: pda("rewards", mint.publicKey), owner: deployer.publicKey,
+  };
+  await lp.methods.stake(new BN(myTokens.toString())).accountsPartial(stakeAccts).rpc();
+  console.log("staked", Number(myTokens) / 1e6, "GOLD");
+  await tp.methods.buy(new BN(60_000_000), new BN(0)).accountsPartial({ ...accts, buyer: trader.publicKey }).rpc();
+  const traderTokens = (await getAccount(conn, getAssociatedTokenAddressSync(mint.publicKey, trader.publicKey))).amount;
+  await tp.methods.sell(new BN((traderTokens / 3n).toString()), new BN(0)).accountsPartial({ ...accts, seller: trader.publicKey }).rpc();
+  const before = await conn.getBalance(deployer.publicKey);
+  await lp.methods.claim().accountsPartial({ curve, mint: mint.publicKey, position: stakeAccts.position, rewards: stakeAccts.rewards, owner: deployer.publicKey }).rpc();
+  console.log("claimed holders fee:", ((await conn.getBalance(deployer.publicKey)) - before + 5000) / 1e9, "SOL");
+  const c = await lp.account.curve.fetch(curve);
+  console.log("creator fees", Number(c.creatorFeesTotal) / 1e9, "· stakers", Number(c.holderRewardsTotal) / 1e9, "· volume", Number(c.volumeSol) / 1e9);
 }
 
 main().then(() => process.exit(0)).catch((e) => { console.error(e); process.exit(1); });

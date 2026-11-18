@@ -411,3 +411,26 @@ footer { padding: 60px 0 40px; color: var(--ink-3); font-size: 14px; }
   .summary { grid-template-columns: 1fr; gap: 4px; }
   .summary dd { margin-bottom: 8px; }
 }
+
+/* fees + staking */
+.fee-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 6px; border-radius: 99px; background: rgba(255,255,255,.08); outline: none; padding: 0 !important; border: 0 !important; }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: linear-gradient(135deg, var(--saffron), var(--marigold)); box-shadow: 0 0 0 4px rgba(255,166,43,.18); cursor: pointer; }
+input[type=range]::-moz-range-thumb { width: 18px; height: 18px; border: 0; border-radius: 50%; background: var(--marigold); cursor: pointer; }
+.fee-explain { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.fee-explain div { border: 1px solid var(--line); border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 2px; }
+.fee-explain b { font-size: 20px; font-weight: 500; letter-spacing: -0.02em; }
+.fee-explain small { color: var(--ink-3); font-size: 12px; }
+.fee-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; align-items: center; }
+.fee-chips.sm { margin-left: 0; }
+.chip { font-size: 12px; padding: 4px 9px; border-radius: 99px; border: 1px solid var(--line-2); color: var(--ink-2); white-space: nowrap; }
+.token-grid.lower { grid-template-columns: 1.2fr 1fr 1fr; }
+.stake-card { padding: 22px; display: flex; flex-direction: column; gap: 12px; }
+.stake-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.stake-stats div { border: 1px solid var(--line); border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 2px; }
+.stake-stats small { color: var(--ink-3); font-size: 11px; }
+.stake-stats b { font-size: 18px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.stake-row { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; }
+.stake-row input { font: inherit; color: var(--ink); background: rgba(0,0,0,.3); border: 1px solid var(--line-2); border-radius: 12px; padding: 11px 70px 11px 14px; width: 100%; outline: none; }
+@media (max-width: 1100px) { .token-grid.lower { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 960px) { .token-grid.lower { grid-template-columns: 1fr; } .fee-grid, .fee-explain { grid-template-columns: 1fr; } }

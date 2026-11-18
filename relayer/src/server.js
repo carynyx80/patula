@@ -12,7 +12,7 @@
 // bound inside each proof, so it cannot redirect funds or change its fee.
 
 import http from "node:http";
-import { readFileSync, mkdirSync, existsSync, writeFileSync, createReadStream } from "node:fs";
+import { readFileSync, mkdirSync, existsSync, writeFileSync, createReadStream, appendFileSync } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import {
@@ -33,11 +33,23 @@ const ALT_ADDRESS = process.env.ALT_ADDRESS ? new PublicKey(process.env.ALT_ADDR
 const DATA_DIR = process.env.DATA_DIR || path.resolve("data-local");
 const META_DIR = path.join(DATA_DIR, "meta");
 const PUBLIC_URL = (process.env.PUBLIC_URL || `http://localhost:${process.env.PORT || 8080}`).replace(/\/$/, "");
+// Anonymous launches are paid for with a private withdrawal to the relayer.
+const LAUNCH_PRICE = BigInt(process.env.PRIVATE_LAUNCH_PRICE_LAMPORTS || "45000000");
+const PINATA_JWT = process.env.PINATA_JWT || "";
+const IPFS_GATEWAY = (process.env.IPFS_GATEWAY || "https://gateway.pinata.cloud/ipfs").replace(/\/$/, "");
 mkdirSync(META_DIR, { recursive: true });
+const DENY_FILE = path.join(DATA_DIR, "denylist.txt");
+const USED_FILE = path.join(DATA_DIR, "used-payments.txt");
+const readLines = (f) => (existsSync(f) ? readFileSync(f, "utf8").split(/\s+/).filter(Boolean) : []);
+const denylist = new Set([...(process.env.DENYLIST || "").split(",").map((s) => s.trim()).filter(Boolean), ...readLines(DENY_FILE)]);
+const usedPayments = new Set(readLines(USED_FILE));
+const denied = (addr) => denylist.has(String(addr));
 
 const read = (f) => JSON.parse(readFileSync(new URL(`../data/${f}`, import.meta.url)));
 const poolIdl = read("idl.json");
 const lpIdl = read("launchpad-idl.json");
+if (process.env.PROGRAM_ID) poolIdl.address = process.env.PROGRAM_ID;
+if (process.env.LAUNCHPAD_ID) lpIdl.address = process.env.LAUNCHPAD_ID;
 const phase0 = read("phase0.json");
 
 function loadKeypair() {
@@ -187,6 +199,7 @@ async function health() {
     ok: true, cluster: CLUSTER, programId: POOL_ID.toBase58(), launchpadId: LP_ID.toBase58(),
     programDeployed: ready, relayer: relayer.publicKey.toBase58(), relayerBalanceSol: balance / 1e9,
     minFeeLamports: MIN_FEE.toString(), altAddress: ALT_ADDRESS?.toBase58() ?? null, poolVersion: 2,
+    privateLaunchPriceLamports: LAUNCH_PRICE.toString(), metadataStorage: PINATA_JWT ? "ipfs" : "relayer",
   };
 }
 
@@ -200,7 +213,7 @@ async function stats() {
   }
   return {
     phase0: phase0.map(({ tx, proveMs, computeUnits, txBytes }) => ({ tx, proveMs, computeUnits, txBytes })),
-    constraints: 27371, testsPassed: 16, testsTotal: 16, pool: poolState,
+    constraints: 27371, testsPassed: 20, testsTotal: 20, pool: poolState,
   };
 }
 
@@ -211,6 +224,7 @@ async function relayTransact(b) {
   const ext = BigInt(b.extAmount), fee = u64(b.fee);
   if (ext > 0n) return [400, { error: "deposits are signed by the depositor, not relayed" }];
   if (fee < MIN_FEE) return [400, { error: `fee must be at least ${MIN_FEE} lamports` }];
+  if (denied(b.recipient)) return [403, { error: "recipient is blocked" }];
   const ix = await pool.methods.transact(b.proof, new BN(ext.toString()), new BN(fee.toString()))
     .accountsPartial({ pool: poolPda, vault: vaultPda, ...nullifierAccounts(b.proof), signer: relayer.publicKey, recipient: new PublicKey(b.recipient) })
     .instruction();
@@ -223,7 +237,8 @@ async function tradeAccounts(mint) {
   const cfg = await lp.account.config.fetch(lpConfig);
   return {
     mint, poolToken: ata(mint, vaultPda), lpConfig, lpCurve: curve, lpCurveTokenVault: ata(mint, curve),
-    lpSolVault: pda(LP_ID, Buffer.from("sol_vault"), mint.toBuffer()), lpFeeRecipient: cfg.feeRecipient,
+    lpSolVault: pda(LP_ID, Buffer.from("sol_vault"), mint.toBuffer()), lpRewards: pda(LP_ID, Buffer.from("rewards"), mint.toBuffer()),
+    lpFeeRecipient: cfg.feeRecipient,
     lpCreator: c.creator, launchpadProgram: LP_ID,
   };
 }
@@ -246,10 +261,19 @@ async function launchPrepare(b) {
   const name = String(b.name || "").trim(), symbol = String(b.symbol || "").trim().toUpperCase(), uri = String(b.uri || "").trim();
   if (!name || name.length > 32 || !symbol || symbol.length > 10 || uri.length > 200) return [400, { error: "name 1-32, symbol 1-10, uri up to 200 chars" }];
   const creator = new PublicKey(b.creator), mint = new PublicKey(b.mint);
+  if (denied(creator.toBase58())) return [403, { error: "creator is blocked" }];
   const cfg = await lp.account.config.fetch(lpConfig);
+  const f = b.fees || {};
+  const fees = { buyFeeBps: Number(f.buyFeeBps || 0), sellFeeBps: Number(f.sellFeeBps || 0), holderShareBps: Number(f.holderShareBps || 0) };
+  if ([fees.buyFeeBps, fees.sellFeeBps].some((x) => !Number.isInteger(x) || x < 0 || x > cfg.maxTokenFeeBps) || !Number.isInteger(fees.holderShareBps) || fees.holderShareBps < 0 || fees.holderShareBps > 10000) {
+    return [400, { error: `fees must be 0-${cfg.maxTokenFeeBps} bps per side, holder share 0-10000` }];
+  }
+  // payment: a recent, successful private withdrawal from the pool vault to this relayer
+  const pay = await verifyPayment(String(b.payment || ""));
+  if (pay) return [402, { error: pay, priceLamports: LAUNCH_PRICE.toString(), payTo: relayer.publicKey.toBase58() }];
   const curve = pda(LP_ID, Buffer.from("curve"), mint.toBuffer());
   const rent = await connection.getMinimumBalanceForRentExemption(0);
-  const ix = await lp.methods.createToken(name, symbol, uri)
+  const ix = await lp.methods.createToken(name, symbol, uri, fees)
     .accountsPartial({
       config: lpConfig, payer: relayer.publicKey, creator, mint, curve, curveTokenVault: ata(mint, curve),
       solVault: pda(LP_ID, Buffer.from("sol_vault"), mint.toBuffer()), feeRecipient: cfg.feeRecipient,
@@ -260,21 +284,42 @@ async function launchPrepare(b) {
     .add(SystemProgram.transfer({ fromPubkey: relayer.publicKey, toPubkey: creator, lamports: rent }))
     .add(ix);
   const msg = tx.serializeMessage();
-  pendingLaunches.set(createHash("sha256").update(msg).digest("hex"), Date.now() + 90_000);
+  pendingLaunches.set(createHash("sha256").update(msg).digest("hex"), { exp: Date.now() + 90_000, payment: String(b.payment) });
   return [200, { tx: tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64") }];
 }
 
 async function launchSubmit(b) {
   const tx = Transaction.from(Buffer.from(String(b.tx || ""), "base64"));
   const key = createHash("sha256").update(tx.serializeMessage()).digest("hex");
-  const exp = pendingLaunches.get(key);
-  if (!exp || exp < Date.now()) return [400, { error: "unknown or expired launch; prepare again" }];
+  const pending = pendingLaunches.get(key);
+  if (!pending || pending.exp < Date.now()) return [400, { error: "unknown or expired launch; prepare again" }];
+  if (usedPayments.has(pending.payment)) return [402, { error: "payment already used" }];
   pendingLaunches.delete(key);
   tx.partialSign(relayer);
   if (!tx.verifySignatures()) return [400, { error: "missing creator or mint signature" }];
   const sig = await connection.sendRawTransaction(tx.serialize(), { maxRetries: 3 });
   await connection.confirmTransaction(sig, "confirmed");
+  usedPayments.add(pending.payment);
+  try { appendFileSync(USED_FILE, pending.payment + "\n"); } catch { /* best effort */ }
   return [200, { signature: sig }];
+}
+
+/** Returns an error string, or null when `sig` is a valid unused payment. */
+async function verifyPayment(sig) {
+  if (LAUNCH_PRICE === 0n) return null;
+  if (!sig) return "anonymous launches must be paid with a private withdrawal to the relayer";
+  if (usedPayments.has(sig)) return "payment already used";
+  const tx = await connection.getTransaction(sig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 }).catch(() => null);
+  if (!tx || tx.meta?.err) return "payment transaction not found or failed";
+  if (tx.blockTime && Date.now() / 1000 - tx.blockTime > 1800) return "payment is older than 30 minutes";
+  const keys = tx.transaction.message.getAccountKeys({ accountKeysFromLookups: tx.meta.loadedAddresses }).staticAccountKeys
+    .concat(tx.meta.loadedAddresses?.writable ?? [], tx.meta.loadedAddresses?.readonly ?? []);
+  const vi = keys.findIndex((k) => k.equals(vaultPda));
+  const ri = keys.findIndex((k) => k.equals(relayer.publicKey));
+  if (vi < 0 || ri < 0) return "payment did not come from the shielded pool to this relayer";
+  const fromVault = BigInt(tx.meta.preBalances[vi] - tx.meta.postBalances[vi]);
+  if (fromVault < LAUNCH_PRICE + MIN_FEE) return `payment too small: send at least ${LAUNCH_PRICE} lamports plus the relayer fee`;
+  return null;
 }
 
 // ---- token metadata hosting (image + Metaplex-style JSON, content-addressed) ----
@@ -288,7 +333,15 @@ const IMAGE_TYPES = [
 const MIME = { png: "image/png", jpg: "image/jpeg", gif: "image/gif", webp: "image/webp", json: "application/json" };
 const hash = (buf) => createHash("sha256").update(buf).digest("hex").slice(0, 40);
 
-function storeImage(dataUrl, maxBytes) {
+async function pinFile(buf, name, mime) {
+  const form = new FormData();
+  form.append("file", new Blob([buf], { type: mime }), name);
+  const r = await fetch("https://api.pinata.cloud/pinning/pinFileToIPFS", { method: "POST", headers: { Authorization: `Bearer ${PINATA_JWT}` }, body: form });
+  if (!r.ok) throw new Error(`IPFS pin failed (${r.status})`);
+  return `${IPFS_GATEWAY}/${(await r.json()).IpfsHash}`;
+}
+
+async function storeImage(dataUrl, maxBytes) {
   const m = /^data:image\/[a-z+]+;base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl || ""));
   if (!m) throw new Error("image must be a base64 data URL");
   const buf = Buffer.from(m[1], "base64");
@@ -297,8 +350,8 @@ function storeImage(dataUrl, maxBytes) {
   if (!t) throw new Error("image must be PNG, JPEG, GIF or WebP");
   const name = `${hash(buf)}.${t.ext}`;
   const file = path.join(META_DIR, name);
-  if (!existsSync(file)) writeFileSync(file, buf);
-  return `${PUBLIC_URL}/meta/${name}`;
+  if (!existsSync(file)) writeFileSync(file, buf); // local copy is always kept
+  return PINATA_JWT ? pinFile(buf, name, t.mime) : `${PUBLIC_URL}/meta/${name}`;
 }
 
 const cleanUrl = (v, hosts) => {
@@ -324,8 +377,8 @@ async function uploadMetadata(b) {
     telegram: cleanUrl(b.telegram, ["t.me", "telegram.me"]),
     discord: cleanUrl(b.discord, ["discord.gg", "discord.com"]),
   };
-  const image = storeImage(b.image, 2_000_000);
-  const banner = b.banner ? storeImage(b.banner, 3_000_000) : undefined;
+  const image = await storeImage(b.image, 2_000_000);
+  const banner = b.banner ? await storeImage(b.banner, 3_000_000) : undefined;
   const json = {
     name, symbol, description, image,
     ...(banner ? { banner } : {}),
@@ -336,7 +389,8 @@ async function uploadMetadata(b) {
   const body = Buffer.from(JSON.stringify(json));
   const file = `${hash(body)}.json`;
   if (!existsSync(path.join(META_DIR, file))) writeFileSync(path.join(META_DIR, file), body);
-  return { uri: `${PUBLIC_URL}/meta/${file}`, image, banner: banner ?? null, metadata: json };
+  const uri = PINATA_JWT ? await pinFile(body, file, "application/json") : `${PUBLIC_URL}/meta/${file}`;
+  return { uri, image, banner: banner ?? null, metadata: json };
 }
 
 function serveMeta(res, name) {
@@ -364,6 +418,7 @@ const server = http.createServer(async (req, res) => {
       if (url.pathname === "/stats") return send(res, 200, await stats());
       if (url.pathname === "/tree") return send(res, 200, await getTree());
       if (url.pathname.startsWith("/meta/")) return serveMeta(res, url.pathname.slice(6));
+      if (url.pathname === "/screen") return send(res, 200, { address: url.searchParams.get("address"), blocked: denied(url.searchParams.get("address")) });
     }
     if (req.method === "POST" && url.pathname === "/metadata") {
       if (rateLimited(ip + "/metadata", 10, 60_000)) return send(res, 429, { error: "slow down" });

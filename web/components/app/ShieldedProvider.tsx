@@ -11,7 +11,8 @@ import {
   selectNotes, sellHash, shieldedSecret, toBytes32, transactHash, UNLOCK_MESSAGE, Vault,
 } from "@/lib/shielded";
 
-type RelayerHealth = Health & { minFeeLamports: string };
+type RelayerHealth = Health & { minFeeLamports: string; privateLaunchPriceLamports?: string };
+export type LaunchFees = { buyFeeBps: number; sellFeeBps: number; holderShareBps: number };
 
 type Ctx = {
   unlocked: boolean;
@@ -27,7 +28,8 @@ type Ctx = {
   withdraw: (lamports: bigint, recipient: PublicKey) => Promise<string>;
   buy: (mint: string, tokensOut: bigint, maxSol: bigint) => Promise<string>;
   sell: (mint: string, tokensIn: bigint, minSol: bigint) => Promise<string>;
-  launch: (name: string, symbol: string, uri: string) => Promise<{ mint: string; signature: string }>;
+  launch: (name: string, symbol: string, uri: string, fees: LaunchFees) => Promise<{ mint: string; signature: string }>;
+  launchPrice: bigint;
   exportBackup: () => string | null;
 };
 
@@ -38,6 +40,7 @@ export const useShielded = () => {
   return c;
 };
 
+if (process.env.NEXT_PUBLIC_POOL_ID) (poolIdl as { address: string }).address = process.env.NEXT_PUBLIC_POOL_ID;
 const POOL_ID = new PublicKey((poolIdl as { address: string }).address);
 const pda = (...seeds: Buffer[]) => PublicKey.findProgramAddressSync(seeds, POOL_ID)[0];
 const POOL_PDA = pda(Buffer.from("pool2"));
@@ -50,15 +53,17 @@ export default function ShieldedProvider({ children }: { children: React.ReactNo
   const [key, setKey] = useState<CryptoKey | null>(null);
   const secret = useRef<bigint>(0n);
   const [vault, setVault] = useState<Vault>({ notes: [], creators: [] });
+  const latest = useRef<Vault>({ notes: [], creators: [] });
   const [busy, setBusy] = useState("");
   const [health, setHealth] = useState<RelayerHealth | null>(null);
   const owner = wallet.publicKey?.toBase58() ?? "";
 
   useEffect(() => { getJSON<RelayerHealth>("/health").then(setHealth); }, []);
-  useEffect(() => { setKey(null); setVault({ notes: [], creators: [] }); }, [owner]);
+  useEffect(() => { setKey(null); setVault({ notes: [], creators: [] }); latest.current = { notes: [], creators: [] }; }, [owner]);
 
   const notes = useMemo(() => vault.notes.map(Note.fromJSON), [vault]);
   const persist = useCallback(async (v: Vault) => {
+    latest.current = v;
     setVault(v);
     if (key && owner) await saveVault(owner, key, v);
   }, [key, owner]);
@@ -90,6 +95,7 @@ export default function ShieldedProvider({ children }: { children: React.ReactNo
     const v = await loadVault(wallet.publicKey.toBase58(), k);
     setKey(k);
     const r = await reconcile(v).catch(() => v);
+    latest.current = r;
     setVault(r);
     await saveVault(wallet.publicKey.toBase58(), k, r);
   }, [wallet, reconcile]);
@@ -101,7 +107,9 @@ export default function ShieldedProvider({ children }: { children: React.ReactNo
   /** After a private tx: remove spent inputs, add new outputs, index them when the relayer sees them. */
   const settle = useCallback(async (spent: Note[], outputs: Note[]) => {
     const spentSet = new Set(spent.map((n) => n.commitment.toString()));
-    const next: Vault = { ...vault, notes: [...notes.filter((n) => !spentSet.has(n.commitment.toString())), ...outputs.filter((o) => o.amount > 0n)].map((n) => n.toJSON()) };
+    const cur = latest.current;
+    const curNotes = cur.notes.map(Note.fromJSON);
+    const next: Vault = { ...cur, notes: [...curNotes.filter((n) => !spentSet.has(n.commitment.toString())), ...outputs.filter((o) => o.amount > 0n)].map((n) => n.toJSON()) };
     await persist(next);
     for (let i = 0; i < 6; i++) {
       await new Promise((r) => setTimeout(r, 1500));
@@ -183,19 +191,35 @@ export default function ShieldedProvider({ children }: { children: React.ReactNo
     return signature;
   }), [key, relayer, relayerFee, notes, settle]);
 
-  const launch = useCallback((name: string, symbol: string, uri: string) => withStatus(async () => {
-    if (!key) throw new Error("Unlock your shielded balance first (it stores your anonymous creator key).");
+  const launchPrice = BigInt(health?.privateLaunchPriceLamports ?? "0");
+  const launch = useCallback((name: string, symbol: string, uri: string, fees: LaunchFees) => withStatus(async () => {
+    if (!key || !relayer) throw new Error("Unlock your shielded balance first (it stores your anonymous creator key).");
     const creator = SolKeypair.generate(), mint = SolKeypair.generate();
+    // Pay the launch cost privately: a shielded withdrawal to the relayer.
+    let payment = "";
+    if (launchPrice > 0n) {
+      const fee = relayerFee;
+      const inputs = selectNotes(notes, launchPrice + fee);
+      const total = inputs.reduce((a, n) => a + n.amount, 0n);
+      setBusy("Paying the launch privately: generating proof…");
+      const tree = await fetchTree();
+      const ext = -launchPrice;
+      const { proof, outputs } = await prove({ tree, inputs, outputs: [new Note(total - launchPrice - fee, secret.current)], publicSol: ext - fee, publicToken: 0n, extHash: transactHash(relayer, relayer, ext, fee) });
+      setBusy("Paying the launch privately: relaying…");
+      payment = (await relayerPost("/relay/transact", { proof, extAmount: ext, fee, recipient: relayer.toBase58() })).signature;
+      await settle(inputs, outputs);
+    }
     setBusy("Preparing anonymous launch…");
-    const { tx } = await relayerPost<{ tx: string }>("/launch/prepare", { name, symbol, uri, creator: creator.publicKey.toBase58(), mint: mint.publicKey.toBase58() });
+    const { tx } = await relayerPost<{ tx: string }>("/launch/prepare", { name, symbol, uri, fees, payment, creator: creator.publicKey.toBase58(), mint: mint.publicKey.toBase58() });
     const t = Transaction.from(Buffer.from(tx, "base64"));
     t.partialSign(mint, creator);
     // keep the creator key before submitting so creator fees are never orphaned
-    await persist({ ...vault, creators: [...vault.creators, { mint: mint.publicKey.toBase58(), secret: Array.from(creator.secretKey) }] });
+    const cur = latest.current;
+    await persist({ ...cur, creators: [...cur.creators, { mint: mint.publicKey.toBase58(), secret: Array.from(creator.secretKey) }] });
     setBusy("Launching via relayer…");
     const { signature } = await relayerPost("/launch/submit", { tx: t.serialize({ requireAllSignatures: false }).toString("base64") });
     return { mint: mint.publicKey.toBase58(), signature };
-  }), [key, vault, persist]);
+  }), [key, vault, persist, relayer, relayerFee, notes, launchPrice, settle]);
 
   const value: Ctx = {
     unlocked: !!key,
@@ -205,7 +229,7 @@ export default function ShieldedProvider({ children }: { children: React.ReactNo
     tokenBalance: (mint) => notes.filter((n) => n.mint === mint).reduce((a, n) => a + n.amount, 0n),
     relayerFee,
     vaultPda: VAULT_PDA.toBase58(),
-    unlock, refresh, deposit, withdraw, buy, sell, launch,
+    unlock, refresh, deposit, withdraw, buy, sell, launch, launchPrice,
     exportBackup: () => (owner ? exportVaultBlob(owner) : null),
   };
   return <ShieldedCtx.Provider value={value}>{children}</ShieldedCtx.Provider>;

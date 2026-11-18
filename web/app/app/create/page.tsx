@@ -12,8 +12,8 @@ import Socials, { LABELS, SocialIcon } from "@/components/app/Socials";
 import { useShielded } from "@/components/app/ShieldedProvider";
 import { normalizeLink, prepareImage, uploadMeta } from "@/lib/meta";
 import {
-  ConfigView, configPda, curvePda, CurveView, fetchConfig, getProgram, LAMPORTS, quoteBuy, solVaultPda, TOKEN_DECIMALS,
-  TOTAL_SUPPLY, vaultAta,
+  ConfigView, configPda, curvePda, CurveView, fetchConfig, getProgram, LAMPORTS, pct, quoteBuy, solVaultPda, TOKEN_DECIMALS,
+  TOTAL_SUPPLY, vaultAta, rewardsPda,
 } from "@/lib/solana";
 
 type LinkKind = keyof typeof LABELS;
@@ -23,8 +23,8 @@ const LINK_PLACEHOLDER: Record<LinkKind, string> = {
   telegram: "t.me/yourgroup",
   discord: "discord.gg/invite",
 };
-// account sizes created at launch: mint, curve, curve token vault, SOL vault, Metaplex metadata
-const LAUNCH_ACCOUNT_SIZES = [82, 376, 165, 0, 679];
+// account sizes created at launch: mint, curve, curve token vault, stake vault, SOL vault, rewards vault, Metaplex metadata
+const LAUNCH_ACCOUNT_SIZES = [82, 472, 165, 165, 0, 0, 679];
 
 function Dropzone({ label, hint, aspect, value, onFile, error }: {
   label: string; hint: string; aspect: "square" | "banner"; value?: string; onFile: (f: File) => void; error?: string;
@@ -77,6 +77,10 @@ export default function Create() {
   const [showLinks, setShowLinks] = useState(true);
   const [priv, setPriv] = useState(false);
   const [devBuy, setDevBuy] = useState("");
+  const [buyFee, setBuyFee] = useState(1); // %
+  const [sellFee, setSellFee] = useState(1); // %
+  const [holderShare, setHolderShare] = useState(50); // % of the creator fee paid to stakers
+  const fees = { buyFeeBps: Math.round(buyFee * 100), sellFeeBps: Math.round(sellFee * 100), holderShareBps: Math.round(holderShare * 100) };
   const [review, setReview] = useState(false);
   const [ack, setAck] = useState(false);
   const [busy, setBusy] = useState("");
@@ -97,12 +101,12 @@ export default function Create() {
   const buySol = priv ? 0 : parseFloat(devBuy) || 0;
   const firstBuy = useMemo(() => {
     if (!cfg || buySol <= 0) return null;
-    const fresh = { virtualSol: cfg.virtualSol, virtualToken: cfg.virtualToken, realToken: cfg.curveSupply } as CurveView;
+    const fresh = { virtualSol: cfg.virtualSol, virtualToken: cfg.virtualToken, realToken: cfg.curveSupply, complete: false, fees } as CurveView;
     const tokens = quoteBuy(fresh, cfg, BigInt(Math.round(buySol * LAMPORTS))).tokensOut;
     const pct = (Number(tokens) / 10 ** TOKEN_DECIMALS / TOTAL_SUPPLY) * 100;
     const cap = Math.min(cfg.sniperMaxBps, cfg.maxCreatorBuyBps) / 100;
     return { tokens, pct, cap, over: pct > cap };
-  }, [cfg, buySol]);
+  }, [cfg, buySol, fees.buyFeeBps]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const errors = {
     name: !name.trim() ? "Required" : name.length > 32 ? "Max 32 characters" : "",
@@ -137,7 +141,7 @@ export default function Create() {
 
       if (priv) {
         if (!shielded.unlocked) { setBusy("Unlock your shielded balance in your wallet…"); await shielded.unlock(); }
-        const { mint } = await shielded.launch(name.trim(), symbol, uri);
+        const { mint } = await shielded.launch(name.trim(), symbol, uri, fees);
         router.push(`/app/t/${mint}?launched=1`);
         return;
       }
@@ -150,12 +154,12 @@ export default function Create() {
         curveTokenVault: vaultAta(mint.publicKey), solVault: solVaultPda(mint.publicKey), feeRecipient: cfg.feeRecipient,
       };
       const tx = new Transaction().add(
-        await program.methods.createToken(name.trim(), symbol, uri)
+        await program.methods.createToken(name.trim(), symbol, uri, fees)
           .accountsPartial({ ...accts, payer: wallet.publicKey, creator: wallet.publicKey }).instruction()
       );
       if (buySol > 0) {
         tx.add(await program.methods.buy(new BN(Math.round(buySol * LAMPORTS)), new BN(0))
-          .accountsPartial({ ...accts, buyer: wallet.publicKey, buyerToken: getAssociatedTokenAddressSync(mint.publicKey, wallet.publicKey), creator: wallet.publicKey })
+          .accountsPartial({ ...accts, rewards: rewardsPda(mint.publicKey), buyer: wallet.publicKey, buyerToken: getAssociatedTokenAddressSync(mint.publicKey, wallet.publicKey), creator: wallet.publicKey })
           .instruction());
       }
       const sig = await wallet.sendTransaction(tx, connection, { signers: [mint] });
@@ -174,7 +178,10 @@ export default function Create() {
   }
 
   const launchFee = cfg ? Number(cfg.launchFee) / LAMPORTS : 0;
-  const total = (priv ? 0 : launchFee + (rentSol ?? 0)) + buySol;
+  const privCost = Number(shielded.launchPrice + shielded.relayerFee) / LAMPORTS;
+  const total = (priv ? privCost : launchFee + (rentSol ?? 0)) + buySol;
+  const maxFee = (cfg?.maxTokenFeeBps ?? 1000) / 100;
+  const platformPct = (cfg?.platformFeeBps ?? 50) / 100;
   const previewLinks = Object.fromEntries((Object.keys(linkState) as LinkKind[]).map((k) => [k, linkState[k].value]).filter(([, v]) => v));
   const curvePct = firstBuy && cfg ? (Number(firstBuy.tokens) / Number(cfg.curveSupply)) * 100 : 0;
 
@@ -241,7 +248,33 @@ export default function Create() {
           </section>
 
           <section className="card launch-sec">
-            <div className="sec-head"><span className="sec-num">04</span><h3>Launch settings</h3></div>
+            <div className="sec-head"><span className="sec-num">04</span><h3>Fees <small className="muted">locked forever at launch</small></h3></div>
+            <div className="fee-grid">
+              <label className="field">
+                <span className="field-label">Buy fee <small>{buyFee.toFixed(1)}%</small></span>
+                <input type="range" min={0} max={maxFee} step={0.1} value={buyFee} onChange={(e) => setBuyFee(parseFloat(e.target.value))} />
+              </label>
+              <label className="field">
+                <span className="field-label">Sell fee <small>{sellFee.toFixed(1)}%</small></span>
+                <input type="range" min={0} max={maxFee} step={0.1} value={sellFee} onChange={(e) => setSellFee(parseFloat(e.target.value))} />
+              </label>
+            </div>
+            <label className="field">
+              <span className="field-label">Split of your fee <small>{100 - holderShare}% creator · {holderShare}% stakers</small></span>
+              <input type="range" min={0} max={100} step={5} value={holderShare} onChange={(e) => setHolderShare(parseInt(e.target.value))} />
+            </label>
+            <div className="fee-explain">
+              <div><b>{(buyFee + platformPct).toFixed(1)}%</b><small>total on buys</small></div>
+              <div><b>{(sellFee + platformPct).toFixed(1)}%</b><small>total on sells</small></div>
+              <div><b>{holderShare}%</b><small>of your fee to stakers</small></div>
+            </div>
+            <p className="muted small">
+              Totals include the {platformPct}% platform fee. The creator share is paid to {priv ? "your anonymous creator key" : "your wallet"} on every trade. The staker share goes to holders who stake {symbol ? `$${symbol}` : "the token"}, pro-rata, and keeps flowing after graduation.
+            </p>
+          </section>
+
+          <section className="card launch-sec">
+            <div className="sec-head"><span className="sec-num">05</span><h3>Launch settings</h3></div>
             <div className="visibility">
               <div><b>Creator visibility</b><small>{priv
                 ? "Private: the relayer launches it and a fresh, unlinked key is recorded as creator. Creator fees go to that key, kept in your encrypted shielded backup."
@@ -294,6 +327,11 @@ export default function Create() {
               <small className="muted">{priv ? "◉ Anonymous creator" : wallet.publicKey ? `by ${wallet.publicKey.toBase58().slice(0, 4)}…${wallet.publicKey.toBase58().slice(-4)}` : "by your wallet"}</small>
               <p className="pv-desc">{description || "Your description appears here."}</p>
               <Socials links={previewLinks} />
+              <div className="fee-chips sm">
+                <span className="chip">Buy {pct(fees.buyFeeBps + (cfg?.platformFeeBps ?? 0))}</span>
+                <span className="chip">Sell {pct(fees.sellFeeBps + (cfg?.platformFeeBps ?? 0))}</span>
+                {holderShare > 0 && (buyFee + sellFee) > 0 && <span className="chip">◎ {holderShare}% of fees to stakers</span>}
+              </div>
               <div className="progress"><span style={{ width: `${Math.min(100, curvePct)}%` }} /></div>
               <small className="muted">{curvePct.toFixed(2)}% to graduation</small>
             </div>
@@ -304,7 +342,8 @@ export default function Create() {
             <li>Curve SOL held by the program; no withdraw instruction</li>
             <li>Creator wallet capped at 5% of supply</li>
             <li>Name, ticker and image stored as immutable on-chain metadata</li>
-            <li>Fees: 0.7% platform · 0.3% creator on every trade</li>
+            <li>Your buy/sell fees and staker split are fixed on-chain and can never be raised</li>
+            <li>Graduates into a built-in pool with liquidity locked forever</li>
           </ul>
         </aside>
       </div>
@@ -322,11 +361,12 @@ export default function Create() {
                 {description && <><dt>Description</dt><dd>{description.length > 140 ? description.slice(0, 140) + "…" : description}</dd></>}
                 <dt>Links</dt><dd>{Object.keys(previewLinks).length ? <Socials links={previewLinks} /> : <span className="muted">None</span>}</dd>
                 <dt>Banner</dt><dd>{banner ? "Yes" : <span className="muted">None</span>}</dd>
+                <dt>Fees</dt><dd>Buy {pct(fees.buyFeeBps)} · Sell {pct(fees.sellFeeBps)} (+{pct(cfg?.platformFeeBps ?? 0)} platform) · {holderShare}% of yours to stakers</dd>
                 <dt>Supply</dt><dd>1,000,000,000 · {TOKEN_DECIMALS} decimals</dd>
               </dl>
               <div className="costs">
                 {priv ? (
-                  <div className="cost-row"><span>Launch fee + rent</span><span>Paid by relayer (devnet)</span></div>
+                  <div className="cost-row"><span>Launch fee + rent, paid privately from your shielded balance (incl. relayer fee)</span><span>{privCost.toFixed(4)} SOL</span></div>
                 ) : (
                   <>
                     <div className="cost-row"><span>Launch fee</span><span>{launchFee} SOL</span></div>

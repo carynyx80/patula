@@ -116,7 +116,7 @@ export function Guarantees() {
     ["%", "Capped creator buy", "Dev allocation has a hard ceiling, with optional on-chain vesting — even for private notes."],
     ["⏱", "Anti-sniper window", "Per-proof caps in the first slots stop one person quietly buying the supply."],
     ["⛨", "Screened deposits", "Sanctioned addresses can’t enter the pool. Association sets keep bad funds out."],
-    ["◎", "Viewing keys", "Prove your own history to an exchange or accountant — only when you choose."],
+    ["◎", "Holders fee", "Creators can route part of every trade fee to holders who stake. Claim SOL any time; fees are fixed at launch."],
   ];
   return (
     <section className="section" id="rules" style={{ paddingTop: 0 }}>
@@ -167,8 +167,8 @@ const FALLBACK: Stats = {
     { tx: "withdraw", proveMs: 1602, computeUnits: 146148, txBytes: 976 },
   ],
   constraints: 26784,
-  testsPassed: 6,
-  testsTotal: 6,
+  testsPassed: 20,
+  testsTotal: 20,
   pool: null,
 };
 

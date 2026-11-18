@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import Providers from "@/components/WalletProvider";
 import { Logo } from "@/components/Hero";
 import ShieldedProvider from "./ShieldedProvider";
+import { IS_MAINNET } from "@/lib/solana";
 import ShieldedPanel from "./ShieldedPanel";
 
 const WalletButton = dynamic(
@@ -28,7 +29,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             {tab("/app/create", "Launch")}
           </nav>
           <div className="app-head-right">
-            <span className="net-badge"><span className="dot warn" /> Devnet</span>
+            <span className="net-badge"><span className={`dot ${IS_MAINNET ? "on" : "warn"}`} /> {IS_MAINNET ? "Mainnet" : "Devnet"}</span>
             <ShieldedPanel />
             <WalletButton />
           </div>
@@ -36,7 +37,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       </header>
       <main className="app-main wrap">{children}</main>
       <footer className="app-foot wrap">
-        Prototype on Solana devnet · not audited · dev trusted setup · test SOL only.
+        {IS_MAINNET ? "Solana mainnet · use at your own risk · see the audit status in the docs." : "Solana devnet · test SOL only · not audited."}
       </footer>
       </ShieldedProvider>
     </Providers>

@@ -6,7 +6,7 @@ Privacy launchpad on Solana: creators and buyers choose, per action, whether the
 | Folder | What | Deploys to |
 |---|---|---|
 | `programs/patula`, `circuits/`, `client/` | Shielded pool + ZK circuit (Phase 0) | Solana devnet |
-| `programs/launchpad` | Bonding-curve launchpad, public mode (Phase 1) | Solana devnet |
+| `programs/launchpad` | Launchpad v2: creator buy/sell fees, stake-to-earn holders fee, locked-pool graduation, admin pause | Solana devnet |
 | `web/` | Marketing site with WebGL fluid simulation (Next.js) | Vercel |
 | `relayer/` | Relayer API: `/health`, `/stats`, `POST /relay` | Railway |
 
@@ -56,3 +56,9 @@ The web app lives at `/app` (explore), `/app/create` (launch) and `/app/t/<mint>
 - `scripts/devnet-private.ts` runs launch → deposit → buy → sell → withdraw against a relayer.
 
 Limits: trades fix their amounts in the proof, so buys pay up to a max and sells receive at least a min; price improvement goes to the relayer. Amounts and prices stay public. Notes live in the browser (export a backup).
+
+## Launchpad v2 (fees, staking, graduation)
+
+Program `3yiXiMT2GYNVAjvas5KNFpHvijTj823AA9DsuhWVo3BQ` on devnet. Creators choose a buy fee and a sell fee (capped) and the share
+paid to stakers; holders stake to earn it and claim SOL any time. Curves graduate into a built-in pool with locked liquidity
+where trading, fees and staking continue. See `docs/MAINNET.md` for the mainnet checklist, ceremony and deploy kit.

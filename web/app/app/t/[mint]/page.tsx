@@ -11,10 +11,11 @@ import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import TokenAvatar from "@/components/app/TokenAvatar";
 import { useShielded } from "@/components/app/ShieldedProvider";
 import Socials from "@/components/app/Socials";
+import StakePanel from "@/components/app/StakePanel";
 import { useTokenMeta } from "@/lib/meta";
 import {
-  ConfigView, CurveView, TradeView, configPda, curvePda, explorer, fetchConfig, fetchCurve, fetchTrades,
-  fmtPrice, fmtSol, getProgram, LAMPORTS, priceOf, progressOf, quoteBuy, quoteSell, short, solVaultPda,
+  ConfigView, CurveView, TradeView, configPda, curvePda, curvePrice, explorer, fetchConfig, fetchCurve, fetchTrades,
+  fmtPrice, fmtSol, getProgram, LAMPORTS, pct, progressOf, quoteBuy, quoteSell, rewardsPda, short, solVaultPda,
   TOKEN_DECIMALS, TOTAL_SUPPLY, vaultAta,
 } from "@/lib/solana";
 
@@ -101,7 +102,7 @@ function TokenPage() {
   if (err && !curve) return <div className="notice">Couldn’t load this token: {err}</div>;
   if (!curve || !cfg) return <div className="card skeleton" style={{ height: 420 }} />;
 
-  const price = priceOf(curve.virtualSol, curve.virtualToken);
+  const price = curvePrice(curve);
   const progress = progressOf(curve, cfg.curveSupply);
   const amt = parseFloat(amount) || 0;
   const quote = side === "buy"
@@ -118,7 +119,7 @@ function TokenPage() {
       const program = getProgram(connection, wallet);
       const accts = {
         config: configPda(), curve: curvePda(mint), mint, curveTokenVault: vaultAta(mint),
-        solVault: solVaultPda(mint), feeRecipient: cfg.feeRecipient, creator: new PublicKey(curve.creator),
+        solVault: solVaultPda(mint), rewards: rewardsPda(mint), feeRecipient: cfg.feeRecipient, creator: new PublicKey(curve.creator),
       };
       const userAta = getAssociatedTokenAddressSync(mint, wallet.publicKey);
       let ix;
@@ -205,7 +206,12 @@ function TokenPage() {
             Mint <a href={explorer("address", curve.mint)} target="_blank" rel="noreferrer">{short(curve.mint)}</a>
           </small>
         </div>
-        {curve.complete && <span className="pill-grad">Graduated</span>}
+        <div className="fee-chips">
+          <span className="chip" title="Creator-set fee on buys (plus platform fee)">Buy {pct(curve.fees.buyFeeBps + cfg.platformFeeBps)}</span>
+          <span className="chip" title="Creator-set fee on sells (plus platform fee)">Sell {pct(curve.fees.sellFeeBps + cfg.platformFeeBps)}</span>
+          {curve.fees.holderShareBps > 0 && <span className="chip">◎ {pct(curve.fees.holderShareBps)} to stakers</span>}
+          {curve.complete && <span className="pill-grad">Graduated</span>}
+        </div>
       </div>
 
       <div className="token-grid">
@@ -217,7 +223,9 @@ function TokenPage() {
           </div>
           <Chart trades={trades} current={price} />
           <div className="progress big"><span style={{ width: `${(progress * 100).toFixed(1)}%` }} /></div>
-          <small className="muted">{(progress * 100).toFixed(1)}% sold · graduates when the curve sells out</small>
+          <small className="muted">{curve.complete
+            ? "Graduated · trading on the built-in pool, liquidity locked forever"
+            : `${(progress * 100).toFixed(1)}% sold · graduates into a locked pool when the curve sells out`}</small>
         </div>
 
         <div className="card trade-card">
@@ -254,7 +262,7 @@ function TokenPage() {
               ? `${tokensFmt((quote as ReturnType<typeof quoteBuy>).tokensOut)} ${curve.symbol}`
               : `${fmtSol(Number((quote as ReturnType<typeof quoteSell>).solOut) / LAMPORTS, 6)} SOL`}</b>
           </div>
-          <div className="quote muted"><span>Fees</span><span>1% trade fee · {priv ? `+${fmtSol(Number(shielded.relayerFee) / LAMPORTS)} SOL relayer · 1% slippage room` : "2% max slippage"}</span></div>
+          <div className="quote muted"><span>Fees</span><span>{pct((side === "buy" ? curve.fees.buyFeeBps : curve.fees.sellFeeBps) + cfg.platformFeeBps)} {side} fee · {priv ? `+${fmtSol(Number(shielded.relayerFee) / LAMPORTS)} SOL relayer · 1% slippage room` : "2% max slippage"}</span></div>
           {priv && side === "buy" && amt > 0 && <div className="quote muted"><span>Max cost</span><span>{fmtSol(amt + Number(shielded.relayerFee) / LAMPORTS, 6)} SOL from your shielded balance</span></div>}
           <div className="visibility compact">
             <span>Trade as</span>
@@ -284,6 +292,7 @@ function TokenPage() {
       )}
 
       <div className="token-grid lower">
+        <StakePanel curve={curve} onChange={load} />
         <div className="card feed">
           <div className="feed-head"><span>Trades</span><span>{trades.length} recent</span></div>
           <ul className="feed-list auto">
@@ -307,6 +316,13 @@ function TokenPage() {
             <li className={checks?.noFreeze ? "ok" : ""}>No freeze authority</li>
             <li className="ok">Curve SOL in program vault, no withdraw path</li>
             <li className="ok">Creator buy capped at {cfg.maxCreatorBuyBps / 100}%</li>
+            <li className="ok">Fees fixed at launch: {pct(curve.fees.buyFeeBps)} buy · {pct(curve.fees.sellFeeBps)} sell (+{pct(cfg.platformFeeBps)} platform)</li>
+          </ul>
+          <div className="feed-head" style={{ marginTop: 14 }}><span>Fees earned</span><span>all-time</span></div>
+          <ul className="checks live">
+            <li className="ok">Creator: {fmtSol(Number(curve.creatorFeesTotal) / LAMPORTS, 6)} SOL</li>
+            <li className="ok">Stakers: {fmtSol(Number(curve.holderRewardsTotal) / LAMPORTS, 6)} SOL</li>
+            <li className="ok">Volume: {fmtSol(Number(curve.volumeSol) / LAMPORTS, 4)} SOL</li>
           </ul>
         </div>
       </div>

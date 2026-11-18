@@ -4,7 +4,7 @@ import { useConnection } from "@solana/wallet-adapter-react";
 import { motion } from "framer-motion";
 import { useEffect, useState } from "react";
 import {
-  ConfigView, CurveView, fetchConfig, fetchCurves, fmtPrice, priceOf, progressOf, short, TOTAL_SUPPLY,
+  ConfigView, CurveView, curvePrice, fetchConfig, fetchCurves, fmtPrice, pct, progressOf, short, TOTAL_SUPPLY,
 } from "@/lib/solana";
 import TokenAvatar from "@/components/app/TokenAvatar";
 import { useTokenMeta } from "@/lib/meta";
@@ -48,7 +48,7 @@ export default function Explore() {
 
       <div className="grid-tokens">
         {curves?.map((c, i) => {
-          const price = priceOf(c.virtualSol, c.virtualToken);
+          const price = curvePrice(c);
           const p = cfg ? progressOf(c, cfg.curveSupply) : 0;
           return (
             <motion.div key={c.mint} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04, duration: 0.6, ease: [0.22, 1, 0.36, 1] }}>
@@ -62,12 +62,17 @@ export default function Explore() {
                   {c.complete && <span className="pill-grad">Graduated</span>}
                 </div>
                 <Desc uri={c.uri} />
+                <div className="fee-chips sm">
+                  <span className="chip">Buy {pct(c.fees.buyFeeBps + (cfg?.platformFeeBps ?? 0))}</span>
+                  <span className="chip">Sell {pct(c.fees.sellFeeBps + (cfg?.platformFeeBps ?? 0))}</span>
+                  {c.fees.holderShareBps > 0 && (c.fees.buyFeeBps + c.fees.sellFeeBps) > 0 && <span className="chip">◎ stake to earn</span>}
+                </div>
                 <div className="tc-stats">
                   <div><small>Price</small><b>{fmtPrice(price)} SOL</b></div>
                   <div><small>Market cap</small><b>{(price * TOTAL_SUPPLY).toFixed(2)} SOL</b></div>
                 </div>
                 <div className="progress"><span style={{ width: `${(p * 100).toFixed(1)}%` }} /></div>
-                <small className="tc-prog">{(p * 100).toFixed(1)}% to graduation</small>
+                <small className="tc-prog">{c.complete ? "Graduated · locked pool" : `${(p * 100).toFixed(1)}% to graduation`}</small>
               </Link>
             </motion.div>
           );
