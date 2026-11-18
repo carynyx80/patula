@@ -28,6 +28,7 @@ export function Nav() {
         <a href="#choice">Your choice</a>
         <a href="#how">How it works</a>
         <a href="#rules">Guarantees</a>
+        <a href="#token">Token</a>
         <a href="#proof">Proof</a>
       </nav>
       <div className="nav-right">
