@@ -22,11 +22,11 @@ const post = async (path: string, body: unknown) => {
 };
 const getTree = async () => new MerkleTree(((await (await fetch(RELAYER + "/tree")).json()) as any).leaves.map((h: string) => BigInt("0x" + h)));
 async function locate(notes: Note[]) {
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 40; i++) {
     const t = await getTree();
     notes.forEach((n) => { n.index = t.leaves.findIndex((l) => l === n.commitment); });
     if (notes.every((n) => n.amount === 0n || n.index >= 0)) return t;
-    await new Promise((r) => setTimeout(r, 1500));
+    await new Promise((r) => setTimeout(r, 2000));
   }
   throw new Error("notes not indexed yet");
 }

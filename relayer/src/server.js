@@ -495,7 +495,7 @@ const server = http.createServer(async (req, res) => {
 
 // keep the note tree warm in the background
 syncTree().catch((e) => console.error("tree sync", e?.message || e));
-setInterval(() => { if (!tree.syncing) syncTree().catch((e) => console.error("tree sync", e?.message || e)); }, 15_000);
+setInterval(() => { if (!tree.syncing) syncTree().catch((e) => console.error("tree sync", e?.message || e)); }, 6_000);
 
 server.listen(PORT, () => {
   console.log(`patula-relayer v2 on :${PORT} · ${CLUSTER} · pool ${POOL_ID.toBase58()} · relayer ${relayer.publicKey.toBase58()} · alt ${ALT_ADDRESS?.toBase58() ?? "none"}`);

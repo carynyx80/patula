@@ -111,8 +111,8 @@ export default function ShieldedProvider({ children }: { children: React.ReactNo
     const curNotes = cur.notes.map(Note.fromJSON);
     const next: Vault = { ...cur, notes: [...curNotes.filter((n) => !spentSet.has(n.commitment.toString())), ...outputs.filter((o) => o.amount > 0n)].map((n) => n.toJSON()) };
     await persist(next);
-    for (let i = 0; i < 6; i++) {
-      await new Promise((r) => setTimeout(r, 1500));
+    for (let i = 0; i < 20; i++) {
+      await new Promise((r) => setTimeout(r, 2000));
       const r = await reconcile(next).catch(() => null);
       if (r && r.notes.every((n) => n.i >= 0)) { await persist(r); return; }
     }
