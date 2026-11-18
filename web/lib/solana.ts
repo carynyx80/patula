@@ -98,7 +98,8 @@ export async function fetchConfig(connection: Connection): Promise<ConfigView> {
 export async function fetchCurves(connection: Connection): Promise<CurveView[]> {
   const all = await getProgram(connection).account.curve.all();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return all.map((x: any) => toCurve(x.publicKey, x.account)).reverse();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return all.map((x: any) => toCurve(x.publicKey, x.account)).sort((a: CurveView, b: CurveView) => b.launchSlot - a.launchSlot);
 }
 
 export async function fetchCurve(connection: Connection, mint: PublicKey): Promise<CurveView> {
