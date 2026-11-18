@@ -6,7 +6,7 @@ import { getJSON, Health } from "@/lib/api";
 
 export const GITHUB = "https://github.com/carynyx80/patula";
 
-function Logo() {
+export function Logo() {
   return (
     <svg className="logo-mark" viewBox="0 0 32 32" aria-hidden="true">
       <defs>
@@ -48,7 +48,7 @@ export function Nav() {
         <span className="status-pill" title={health?.relayer ?? ""}>
           <span className={`dot ${state}`} /><span className="label">{label}</span>
         </span>
-        <a className="btn btn-primary" href={GITHUB} target="_blank" rel="noreferrer">GitHub ↗</a>
+        <a className="btn btn-primary" href="/app">Launch app</a>
       </div>
     </motion.header>
   );
@@ -92,8 +92,8 @@ export function Hero() {
             Anonymous people, verifiable rules: supply, liquidity and creator limits are enforced on-chain.
           </p>
           <div className="hero-cta">
-            <a className="btn btn-primary" href="#choice">See it move</a>
-            <a className="btn btn-ghost" href={GITHUB} target="_blank" rel="noreferrer">Read the code</a>
+            <a className="btn btn-primary" href="/app">Launch on devnet</a>
+            <a className="btn btn-ghost" href="#choice">See it move</a>
           </div>
         </motion.div>
       </motion.div>

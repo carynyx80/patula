@@ -1,0 +1,39 @@
+"use client";
+import dynamic from "next/dynamic";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import Providers from "@/components/WalletProvider";
+import { Logo } from "@/components/Hero";
+
+const WalletButton = dynamic(
+  async () => (await import("@solana/wallet-adapter-react-ui")).WalletMultiButton,
+  { ssr: false }
+);
+
+export default function AppShell({ children }: { children: React.ReactNode }) {
+  const path = usePathname();
+  const tab = (href: string, label: string) => (
+    <Link href={href} className={`app-tab ${path === href ? "on" : ""}`}>{label}</Link>
+  );
+  return (
+    <Providers>
+      <header className="app-head">
+        <div className="wrap app-head-in">
+          <Link href="/" className="logo"><Logo /> Patula</Link>
+          <nav className="app-tabs">
+            {tab("/app", "Explore")}
+            {tab("/app/create", "Launch")}
+          </nav>
+          <div className="app-head-right">
+            <span className="net-badge"><span className="dot warn" /> Devnet</span>
+            <WalletButton />
+          </div>
+        </div>
+      </header>
+      <main className="app-main wrap">{children}</main>
+      <footer className="app-foot wrap">
+        Prototype on Solana devnet · not audited · test SOL only. Private mode arrives in Phase 1b.
+      </footer>
+    </Providers>
+  );
+}
