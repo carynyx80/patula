@@ -12,7 +12,8 @@
 // bound inside each proof, so it cannot redirect funds or change its fee.
 
 import http from "node:http";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdirSync, existsSync, writeFileSync, createReadStream } from "node:fs";
+import path from "node:path";
 import { createHash } from "node:crypto";
 import {
   ComputeBudgetProgram, Connection, Keypair, PublicKey, SystemProgram, Transaction, TransactionMessage,
@@ -29,6 +30,10 @@ const CLUSTER = process.env.CLUSTER || "devnet";
 const MIN_FEE = BigInt(process.env.MIN_FEE_LAMPORTS || "2000000"); // covers 2 nullifier rents + gas
 const ORIGINS = (process.env.ALLOWED_ORIGINS || "*").split(",").map((s) => s.trim());
 const ALT_ADDRESS = process.env.ALT_ADDRESS ? new PublicKey(process.env.ALT_ADDRESS) : null;
+const DATA_DIR = process.env.DATA_DIR || path.resolve("data-local");
+const META_DIR = path.join(DATA_DIR, "meta");
+const PUBLIC_URL = (process.env.PUBLIC_URL || `http://localhost:${process.env.PORT || 8080}`).replace(/\/$/, "");
+mkdirSync(META_DIR, { recursive: true });
 
 const read = (f) => JSON.parse(readFileSync(new URL(`../data/${f}`, import.meta.url)));
 const poolIdl = read("idl.json");
@@ -272,6 +277,81 @@ async function launchSubmit(b) {
   return [200, { signature: sig }];
 }
 
+// ---- token metadata hosting (image + Metaplex-style JSON, content-addressed) ----
+
+const IMAGE_TYPES = [
+  { ext: "png", mime: "image/png", sig: (b) => b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47 },
+  { ext: "jpg", mime: "image/jpeg", sig: (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff },
+  { ext: "gif", mime: "image/gif", sig: (b) => b.slice(0, 3).toString() === "GIF" },
+  { ext: "webp", mime: "image/webp", sig: (b) => b.slice(0, 4).toString() === "RIFF" && b.slice(8, 12).toString() === "WEBP" },
+];
+const MIME = { png: "image/png", jpg: "image/jpeg", gif: "image/gif", webp: "image/webp", json: "application/json" };
+const hash = (buf) => createHash("sha256").update(buf).digest("hex").slice(0, 40);
+
+function storeImage(dataUrl, maxBytes) {
+  const m = /^data:image\/[a-z+]+;base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl || ""));
+  if (!m) throw new Error("image must be a base64 data URL");
+  const buf = Buffer.from(m[1], "base64");
+  if (buf.length > maxBytes) throw new Error(`image too large (max ${Math.round(maxBytes / 1024)} KB)`);
+  const t = IMAGE_TYPES.find((x) => x.sig(buf));
+  if (!t) throw new Error("image must be PNG, JPEG, GIF or WebP");
+  const name = `${hash(buf)}.${t.ext}`;
+  const file = path.join(META_DIR, name);
+  if (!existsSync(file)) writeFileSync(file, buf);
+  return `${PUBLIC_URL}/meta/${name}`;
+}
+
+const cleanUrl = (v, hosts) => {
+  const s = String(v || "").trim();
+  if (!s) return undefined;
+  let u;
+  try { u = new URL(/^https?:\/\//i.test(s) ? s : `https://${s}`); } catch { throw new Error(`invalid link: ${s.slice(0, 60)}`); }
+  if (u.protocol !== "https:" && u.protocol !== "http:") throw new Error("links must be http(s)");
+  if (hosts && !hosts.some((h) => u.hostname === h || u.hostname.endsWith("." + h))) throw new Error(`link must be on ${hosts.join(" or ")}`);
+  return u.toString().slice(0, 200);
+};
+
+async function uploadMetadata(b) {
+  const name = String(b.name || "").trim(), symbol = String(b.symbol || "").trim().toUpperCase();
+  const description = String(b.description || "").trim();
+  if (!name || name.length > 32) throw new Error("name must be 1-32 characters");
+  if (!/^[A-Z0-9]{1,10}$/.test(symbol)) throw new Error("ticker must be 1-10 letters or digits");
+  if (description.length > 500) throw new Error("description up to 500 characters");
+  const handle = String(b.twitter || "").trim().replace(/^@/, "");
+  const extensions = {
+    website: cleanUrl(b.website),
+    twitter: handle ? (/^[A-Za-z0-9_]{1,15}$/.test(handle) ? `https://x.com/${handle}` : cleanUrl(handle, ["x.com", "twitter.com"])) : undefined,
+    telegram: cleanUrl(b.telegram, ["t.me", "telegram.me"]),
+    discord: cleanUrl(b.discord, ["discord.gg", "discord.com"]),
+  };
+  const image = storeImage(b.image, 2_000_000);
+  const banner = b.banner ? storeImage(b.banner, 3_000_000) : undefined;
+  const json = {
+    name, symbol, description, image,
+    ...(banner ? { banner } : {}),
+    extensions: Object.fromEntries(Object.entries(extensions).filter(([, v]) => v)),
+    properties: { files: [{ uri: image, type: MIME[image.split(".").pop()] }], category: "image" },
+    createdOn: "https://patula.vercel.app",
+  };
+  const body = Buffer.from(JSON.stringify(json));
+  const file = `${hash(body)}.json`;
+  if (!existsSync(path.join(META_DIR, file))) writeFileSync(path.join(META_DIR, file), body);
+  return { uri: `${PUBLIC_URL}/meta/${file}`, image, banner: banner ?? null, metadata: json };
+}
+
+function serveMeta(res, name) {
+  if (!/^[a-f0-9]{40}\.(png|jpg|gif|webp|json)$/.test(name)) return send(res, 404, { error: "not found" });
+  const file = path.join(META_DIR, name);
+  if (!existsSync(file)) return send(res, 404, { error: "not found" });
+  res.writeHead(200, {
+    "content-type": MIME[name.split(".").pop()],
+    "cache-control": "public, max-age=31536000, immutable",
+    "access-control-allow-origin": "*",
+    "x-content-type-options": "nosniff",
+  });
+  createReadStream(file).pipe(res);
+}
+
 const server = http.createServer(async (req, res) => {
   cors(req, res);
   if (req.method === "OPTIONS") return res.writeHead(204).end();
@@ -283,6 +363,15 @@ const server = http.createServer(async (req, res) => {
       if (url.pathname === "/health") return send(res, 200, await health());
       if (url.pathname === "/stats") return send(res, 200, await stats());
       if (url.pathname === "/tree") return send(res, 200, await getTree());
+      if (url.pathname.startsWith("/meta/")) return serveMeta(res, url.pathname.slice(6));
+    }
+    if (req.method === "POST" && url.pathname === "/metadata") {
+      if (rateLimited(ip + "/metadata", 10, 60_000)) return send(res, 429, { error: "slow down" });
+      try {
+        return send(res, 200, await uploadMetadata(await readBody(req, 7_000_000)));
+      } catch (e) {
+        return send(res, 400, { error: String(e?.message || e) });
+      }
     }
     if (req.method === "POST") {
       const routes = {

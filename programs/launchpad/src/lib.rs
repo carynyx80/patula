@@ -20,6 +20,9 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program::{transfer, Transfer};
 use anchor_spl::associated_token::AssociatedToken;
+use anchor_spl::metadata::{
+    create_metadata_accounts_v3, mpl_token_metadata::types::DataV2, CreateMetadataAccountsV3, Metadata,
+};
 use anchor_spl::token::{
     self, set_authority, spl_token::instruction::AuthorityType, Mint, MintTo, SetAuthority, Token,
     TokenAccount, Transfer as SplTransfer,
@@ -77,8 +80,39 @@ pub mod launchpad {
         curve.symbol = symbol.clone();
         curve.uri = uri.clone();
 
-        // Mint the whole supply into the curve vault, then revoke minting forever.
         let seeds: &[&[u8]] = &[b"curve", mint_key.as_ref(), &[curve.bump]];
+
+        // Standard Metaplex metadata so wallets and explorers show name, ticker
+        // and image. Immutable: nobody can change it after launch.
+        create_metadata_accounts_v3(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_metadata_program.to_account_info(),
+                CreateMetadataAccountsV3 {
+                    metadata: ctx.accounts.metadata.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
+                    mint_authority: curve.to_account_info(),
+                    payer: ctx.accounts.payer.to_account_info(),
+                    update_authority: curve.to_account_info(),
+                    system_program: ctx.accounts.system_program.to_account_info(),
+                    rent: ctx.accounts.rent.to_account_info(),
+                },
+                &[seeds],
+            ),
+            DataV2 {
+                name: name.clone(),
+                symbol: symbol.clone(),
+                uri: uri.clone(),
+                seller_fee_basis_points: 0,
+                creators: None,
+                collection: None,
+                uses: None,
+            },
+            false,
+            true,
+            None,
+        )?;
+
+        // Mint the whole supply into the curve vault, then revoke minting forever.
         token::mint_to(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
@@ -469,9 +503,14 @@ pub struct CreateToken<'info> {
     /// CHECK: checked against config
     #[account(mut, address = config.fee_recipient)]
     pub fee_recipient: UncheckedAccount<'info>,
+    /// CHECK: Metaplex metadata PDA for the mint; created and validated by the metadata program
+    #[account(mut, seeds = [b"metadata", token_metadata_program.key().as_ref(), mint.key().as_ref()], bump, seeds::program = token_metadata_program.key())]
+    pub metadata: UncheckedAccount<'info>,
+    pub token_metadata_program: Program<'info, Metadata>,
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
 }
 
 #[derive(Accounts)]

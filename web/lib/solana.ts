@@ -54,6 +54,8 @@ export type ConfigView = {
   maxCreatorBuyBps: number;
   sniperSlots: number;
   sniperMaxBps: number;
+  virtualSol: bigint;
+  virtualToken: bigint;
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -88,6 +90,8 @@ export async function fetchConfig(connection: Connection): Promise<ConfigView> {
     maxCreatorBuyBps: c.maxCreatorBuyBps,
     sniperSlots: Number(c.sniperSlots.toString()),
     sniperMaxBps: c.sniperMaxBps,
+    virtualSol: big(c.virtualSol),
+    virtualToken: big(c.virtualToken),
   };
 }
 

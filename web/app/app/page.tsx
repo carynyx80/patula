@@ -7,6 +7,12 @@ import {
   ConfigView, CurveView, fetchConfig, fetchCurves, fmtPrice, priceOf, progressOf, short, TOTAL_SUPPLY,
 } from "@/lib/solana";
 import TokenAvatar from "@/components/app/TokenAvatar";
+import { useTokenMeta } from "@/lib/meta";
+
+function Desc({ uri }: { uri: string }) {
+  const m = useTokenMeta(uri);
+  return m?.description ? <p className="tc-desc">{m.description}</p> : null;
+}
 
 export default function Explore() {
   const { connection } = useConnection();
@@ -55,6 +61,7 @@ export default function Explore() {
                   </div>
                   {c.complete && <span className="pill-grad">Graduated</span>}
                 </div>
+                <Desc uri={c.uri} />
                 <div className="tc-stats">
                   <div><small>Price</small><b>{fmtPrice(price)} SOL</b></div>
                   <div><small>Market cap</small><b>{(price * TOTAL_SUPPLY).toFixed(2)} SOL</b></div>

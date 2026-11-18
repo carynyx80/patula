@@ -105,6 +105,15 @@ describe("launchpad (phase 1, public mode)", () => {
     expect(m.freezeAuthority).to.eq(null);
     expect((await getAccount(conn, vault)).amount.toString()).to.eq(CONFIG.totalSupply.toString());
     expect(await conn.getBalance(feeRecipient)).to.eq(0.02 * SOL);
+    // Metaplex metadata: owned by the metadata program, carries name/ticker/uri
+    const MPL = new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
+    const [md] = PublicKey.findProgramAddressSync([Buffer.from("metadata"), MPL.toBuffer(), mint.publicKey.toBuffer()], MPL);
+    const info = await conn.getAccountInfo(md);
+    expect(info!.owner.toBase58()).to.eq(MPL.toBase58());
+    const text = info!.data.toString("utf8");
+    expect(text).to.include("Marigold");
+    expect(text).to.include("MARI");
+    expect(text).to.include("https://patula.vercel.app/t/mari.json");
   });
 
   it("anti-sniper window blocks a large first buy but allows a small one", async () => {

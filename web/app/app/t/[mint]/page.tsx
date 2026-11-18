@@ -10,6 +10,8 @@ import { useParams, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import TokenAvatar from "@/components/app/TokenAvatar";
 import { useShielded } from "@/components/app/ShieldedProvider";
+import Socials from "@/components/app/Socials";
+import { useTokenMeta } from "@/lib/meta";
 import {
   ConfigView, CurveView, TradeView, configPda, curvePda, explorer, fetchConfig, fetchCurve, fetchTrades,
   fmtPrice, fmtSol, getProgram, LAMPORTS, priceOf, progressOf, quoteBuy, quoteSell, short, solVaultPda,
@@ -60,6 +62,7 @@ function TokenPage() {
     search.get("launched") ? { text: "Your token is live. Share the link and watch the curve fill." } : null
   );
   const [err, setErr] = useState("");
+  const meta = useTokenMeta(curve?.uri);
 
   const load = useCallback(async () => {
     if (!mint) return;
@@ -189,7 +192,11 @@ function TokenPage() {
   return (
     <>
       <Link href="/app" className="back">← Explore</Link>
-      <div className="token-head">
+      {meta?.banner && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <div className="token-banner"><img src={meta.banner} alt="" /></div>
+      )}
+      <div className={`token-head ${meta?.banner ? "with-banner" : ""}`}>
         <TokenAvatar seed={curve.mint} uri={curve.uri} size={64} />
         <div>
           <h1>{curve.name} <span className="muted">${curve.symbol}</span></h1>
@@ -267,6 +274,14 @@ function TokenPage() {
           )}
         </div>
       </div>
+
+      {(meta?.description || meta?.extensions) && (
+        <div className="card about">
+          <div className="feed-head"><span>About {curve.symbol}</span><span>from token metadata</span></div>
+          {meta.description && <p>{meta.description}</p>}
+          <Socials links={meta.extensions} />
+        </div>
+      )}
 
       <div className="token-grid lower">
         <div className="card feed">
