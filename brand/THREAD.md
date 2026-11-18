@@ -90,6 +90,18 @@ Launch details soon. Not financial advice.
 
 **10/**
 
+Coming with mainnet: $PATULA buybacks 🌼
+
+Launchers can opt in to receive their creator fees in $PATULA.
+
+When they claim, their SOL fees buy $PATULA on the open market, and the tokens go straight to the launcher.
+
+Every claim is a market buy of $PATULA.
+
+---
+
+**11/**
+
 What you can do now:
 
 ◉ Follow and turn on notifications 🔔
@@ -102,7 +114,10 @@ Mainnet in days. See you in the dark. 🌼
 
 ## Notes before posting
 
-- Post 10 says "mainnet in days". Audits and a trusted-setup ceremony often take longer than planned. If the date
+- Post 10 announces creator-fee buybacks. That feature isn't built yet (today creator fees are paid straight to
+  the creator in SOL on every trade). Only post it once you're committed to shipping it with mainnet.
+- Buyback language invites securities scrutiny in some places. Run post 10 past whoever does your legal review.
+- Post 11 says "mainnet in days". Audits and a trusted-setup ceremony often take longer than planned. If the date
   isn't locked, swap that line for "Mainnet soon." so the thread ages well.
 - Don't add claims like "audited", "safe" or "no presale" unless they're true at the time you post.
 - Optional follow-up reply with the header image: "Anonymous people. Verifiable rules. 🌼"
