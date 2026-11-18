@@ -106,9 +106,9 @@ pub mod launchpad {
 
         // Rent for the SOL vault, then the launch fee.
         let rent = Rent::get()?.minimum_balance(0);
-        pay(&ctx.accounts.system_program, &ctx.accounts.creator, &ctx.accounts.sol_vault, rent)?;
+        pay(&ctx.accounts.system_program, &ctx.accounts.payer, &ctx.accounts.sol_vault, rent)?;
         if config.launch_fee > 0 {
-            pay(&ctx.accounts.system_program, &ctx.accounts.creator, &ctx.accounts.fee_recipient, config.launch_fee)?;
+            pay(&ctx.accounts.system_program, &ctx.accounts.payer, &ctx.accounts.fee_recipient, config.launch_fee)?;
         }
 
         emit!(TokenCreated {
@@ -123,62 +123,20 @@ pub mod launchpad {
     }
 
     pub fn buy(ctx: Context<Buy>, sol_in: u64, min_tokens_out: u64) -> Result<()> {
-        let config = &ctx.accounts.config;
-        let curve = &mut ctx.accounts.curve;
-        require!(!curve.complete, LaunchpadError::CurveComplete);
+        require!(!ctx.accounts.curve.complete, LaunchpadError::CurveComplete);
         require!(sol_in > 0, LaunchpadError::ZeroAmount);
-
-        let q = quote_buy(curve, config, sol_in)?;
-        require!(q.tokens_out > 0, LaunchpadError::ZeroAmount);
+        let q = quote_buy(&ctx.accounts.curve, &ctx.accounts.config, sol_in)?;
         require!(q.tokens_out >= min_tokens_out, LaunchpadError::Slippage);
+        execute_buy(ctx, q)
+    }
 
-        let slot = Clock::get()?.slot;
-        if slot < curve.launch_slot.saturating_add(config.sniper_slots) {
-            let cap = (config.total_supply as u128 * config.sniper_max_bps as u128 / BPS) as u64;
-            require!(q.tokens_out <= cap, LaunchpadError::SniperCap);
-        }
-        if ctx.accounts.buyer.key() == curve.creator {
-            let cap = (config.total_supply as u128 * config.max_creator_buy_bps as u128 / BPS) as u64;
-            let total = curve.creator_bought.checked_add(q.tokens_out).ok_or(LaunchpadError::MathOverflow)?;
-            require!(total <= cap, LaunchpadError::CreatorCap);
-            curve.creator_bought = total;
-        }
-
-        let sys = &ctx.accounts.system_program;
-        pay(sys, &ctx.accounts.buyer, &ctx.accounts.sol_vault, q.net_sol)?;
-        if q.fee > 0 {
-            pay(sys, &ctx.accounts.buyer, &ctx.accounts.fee_recipient, q.fee)?;
-        }
-        if q.creator_fee > 0 {
-            pay(sys, &ctx.accounts.buyer, &ctx.accounts.creator, q.creator_fee)?;
-        }
-
-        let mint_key = curve.mint;
-        let seeds: &[&[u8]] = &[b"curve", mint_key.as_ref(), &[curve.bump]];
-        token::transfer(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                SplTransfer {
-                    from: ctx.accounts.curve_token_vault.to_account_info(),
-                    to: ctx.accounts.buyer_token.to_account_info(),
-                    authority: curve.to_account_info(),
-                },
-                &[seeds],
-            ),
-            q.tokens_out,
-        )?;
-
-        curve.virtual_sol = q.new_virtual_sol;
-        curve.virtual_token = q.new_virtual_token;
-        curve.real_sol = curve.real_sol.checked_add(q.net_sol).ok_or(LaunchpadError::MathOverflow)?;
-        curve.real_token -= q.tokens_out;
-
-        emit_trade(curve, ctx.accounts.buyer.key(), true, q.net_sol + q.fee + q.creator_fee, q.tokens_out)?;
-        if curve.real_token == 0 {
-            curve.complete = true;
-            emit!(Graduated { mint: curve.mint, real_sol: curve.real_sol, slot });
-        }
-        Ok(())
+    /// Buy exactly `tokens_out`, paying at most `max_sol_in` (fees included).
+    /// Used by the shielded pool, whose proofs fix the token amount in advance.
+    pub fn buy_exact_out(ctx: Context<Buy>, tokens_out: u64, max_sol_in: u64) -> Result<()> {
+        require!(!ctx.accounts.curve.complete, LaunchpadError::CurveComplete);
+        let q = quote_buy_exact_out(&ctx.accounts.curve, &ctx.accounts.config, tokens_out)?;
+        require!(q.net_sol + q.fee + q.creator_fee <= max_sol_in, LaunchpadError::Slippage);
+        execute_buy(ctx, q)
     }
 
     pub fn sell(ctx: Context<Sell>, tokens_in: u64, min_sol_out: u64) -> Result<()> {
@@ -304,6 +262,83 @@ pub fn quote_sell(curve: &Curve, config: &Config, tokens_in: u64) -> Result<Sell
     })
 }
 
+
+fn execute_buy(ctx: Context<Buy>, q: BuyQuote) -> Result<()> {
+    let config = &ctx.accounts.config;
+    let curve = &mut ctx.accounts.curve;
+    require!(q.tokens_out > 0, LaunchpadError::ZeroAmount);
+
+    let slot = Clock::get()?.slot;
+    if slot < curve.launch_slot.saturating_add(config.sniper_slots) {
+        let cap = (config.total_supply as u128 * config.sniper_max_bps as u128 / BPS) as u64;
+        require!(q.tokens_out <= cap, LaunchpadError::SniperCap);
+    }
+    if ctx.accounts.buyer.key() == curve.creator {
+        let cap = (config.total_supply as u128 * config.max_creator_buy_bps as u128 / BPS) as u64;
+        let total = curve.creator_bought.checked_add(q.tokens_out).ok_or(LaunchpadError::MathOverflow)?;
+        require!(total <= cap, LaunchpadError::CreatorCap);
+        curve.creator_bought = total;
+    }
+
+    let sys = &ctx.accounts.system_program;
+    pay(sys, &ctx.accounts.buyer, &ctx.accounts.sol_vault, q.net_sol)?;
+    if q.fee > 0 {
+        pay(sys, &ctx.accounts.buyer, &ctx.accounts.fee_recipient, q.fee)?;
+    }
+    if q.creator_fee > 0 {
+        pay(sys, &ctx.accounts.buyer, &ctx.accounts.creator, q.creator_fee)?;
+    }
+
+    let mint_key = curve.mint;
+    let seeds: &[&[u8]] = &[b"curve", mint_key.as_ref(), &[curve.bump]];
+    token::transfer(
+        CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            SplTransfer {
+                from: ctx.accounts.curve_token_vault.to_account_info(),
+                to: ctx.accounts.buyer_token.to_account_info(),
+                authority: curve.to_account_info(),
+            },
+            &[seeds],
+        ),
+        q.tokens_out,
+    )?;
+
+    curve.virtual_sol = q.new_virtual_sol;
+    curve.virtual_token = q.new_virtual_token;
+    curve.real_sol = curve.real_sol.checked_add(q.net_sol).ok_or(LaunchpadError::MathOverflow)?;
+    curve.real_token -= q.tokens_out;
+
+    emit_trade(curve, ctx.accounts.buyer.key(), true, q.net_sol + q.fee + q.creator_fee, q.tokens_out)?;
+    if curve.real_token == 0 {
+        curve.complete = true;
+        emit!(Graduated { mint: curve.mint, real_sol: curve.real_sol, slot });
+    }
+    Ok(())
+}
+
+/// Cost of buying exactly `tokens_out`, fees grossed up on top of the curve cost.
+pub fn quote_buy_exact_out(curve: &Curve, config: &Config, tokens_out: u64) -> Result<BuyQuote> {
+    require!(tokens_out > 0 && tokens_out <= curve.real_token, LaunchpadError::InsufficientLiquidity);
+    let fee_bps = config.trade_fee_bps as u128;
+    let cfee_bps = config.creator_fee_bps as u128;
+    let vs = curve.virtual_sol as u128;
+    let vt = curve.virtual_token as u128;
+    let k = vs * vt;
+    let new_vt = vt - tokens_out as u128;
+    let new_vs = div_ceil(k, new_vt);
+    let net = new_vs - vs;
+    let keep = BPS - fee_bps - cfee_bps;
+    Ok(BuyQuote {
+        tokens_out,
+        net_sol: net as u64,
+        fee: div_ceil(net * fee_bps, keep) as u64,
+        creator_fee: div_ceil(net * cfee_bps, keep) as u64,
+        new_virtual_sol: new_vs as u64,
+        new_virtual_token: new_vt as u64,
+    })
+}
+
 // ------------------------------------------------------------------ helpers
 
 fn pay<'info>(sys: &Program<'info, System>, from: &Signer<'info>, to: &impl ToAccountInfo<'info>, amount: u64) -> Result<()> {
@@ -416,13 +451,18 @@ pub struct InitConfig<'info> {
 pub struct CreateToken<'info> {
     #[account(seeds = [b"config"], bump = config.bump)]
     pub config: Box<Account<'info, Config>>,
+    /// Pays rent and the launch fee. In public mode this is the creator; in
+    /// private mode it is a relayer, so the creator key never needs funding.
     #[account(mut)]
+    pub payer: Signer<'info>,
+    /// Recorded as the token's creator and receives creator fees. Signs so a
+    /// launch cannot be attributed to someone else.
     pub creator: Signer<'info>,
-    #[account(init, payer = creator, mint::decimals = DECIMALS, mint::authority = curve)]
+    #[account(init, payer = payer, mint::decimals = DECIMALS, mint::authority = curve)]
     pub mint: Box<Account<'info, Mint>>,
-    #[account(init, payer = creator, space = 8 + Curve::INIT_SPACE, seeds = [b"curve", mint.key().as_ref()], bump)]
+    #[account(init, payer = payer, space = 8 + Curve::INIT_SPACE, seeds = [b"curve", mint.key().as_ref()], bump)]
     pub curve: Box<Account<'info, Curve>>,
-    #[account(init, payer = creator, associated_token::mint = mint, associated_token::authority = curve)]
+    #[account(init, payer = payer, associated_token::mint = mint, associated_token::authority = curve)]
     pub curve_token_vault: Box<Account<'info, TokenAccount>>,
     #[account(mut, seeds = [b"sol_vault", mint.key().as_ref()], bump)]
     pub sol_vault: SystemAccount<'info>,

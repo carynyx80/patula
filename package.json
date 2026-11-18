@@ -8,6 +8,7 @@
     "@anchor-lang/core": "^0.32.2"
   },
   "devDependencies": {
+    "@noble/hashes": "^1.8.0",
     "@solana/spl-token": "^0.4.15",
     "@types/bn.js": "^5.1.0",
     "@types/chai": "^4.3.0",

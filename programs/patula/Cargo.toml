@@ -14,7 +14,7 @@ cpi = ["no-entrypoint"]
 no-entrypoint = []
 no-idl = []
 no-log-ix-name = []
-idl-build = ["anchor-lang/idl-build"]
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build", "launchpad/idl-build"]
 anchor-debug = []
 custom-heap = []
 custom-panic = []
@@ -22,7 +22,9 @@ custom-panic = []
 
 [dependencies]
 bytemuck = { version = "1.25", features = ["derive", "min_const_generics"] }
-anchor-lang = "0.32.2"
+anchor-lang = { version = "0.32.2", features = ["init-if-needed"] }
+anchor-spl = { version = "0.32.1", features = ["token", "associated_token"] }
+launchpad = { path = "../launchpad", features = ["cpi"] }
 groth16-solana = "0.3.1"
 solana-poseidon = "5.0.1"
 solana-sha256-hasher = "2.3.0"

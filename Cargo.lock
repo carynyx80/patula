@@ -1352,8 +1352,10 @@ name = "patula"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",
+ "anchor-spl",
  "bytemuck",
  "groth16-solana",
+ "launchpad",
  "solana-poseidon",
  "solana-sha256-hasher",
 ]

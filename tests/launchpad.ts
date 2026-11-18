@@ -79,7 +79,7 @@ describe("launchpad (phase 1, public mode)", () => {
   });
 
   it("initializes the global config", async () => {
-    await program.methods.initConfig(CONFIG).rpc();
+    await program.methods.initConfig(CONFIG).rpc({ commitment: "confirmed" });
     const c = await program.account.config.fetch(pda("config"));
     expect(c.tradeFeeBps).to.eq(70);
   });
@@ -88,6 +88,7 @@ describe("launchpad (phase 1, public mode)", () => {
     const sig = await program.methods
       .createToken("Marigold", "MARI", "https://patula.vercel.app/t/mari.json")
       .accountsPartial({
+        payer: creator.publicKey,
         creator: creator.publicKey,
         mint: mint.publicKey,
         curve: curvePda,

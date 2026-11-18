@@ -1,17 +1,26 @@
-//! Patula shielded pool — Phase 0 prototype.
+//! Patula shielded pool v2 (Phase 1b): multi-asset notes and private trading.
 //!
-//! A single-asset (SOL) UTXO pool. Every `transact` spends 2 notes and creates
-//! 2 notes, proven with a Groth16 proof verified on-chain via the alt_bn128
-//! syscalls. Deposits, private transfers and withdrawals are all `transact`
-//! with a different `ext_amount`.
+//! Notes hold SOL or a launchpad token. Every instruction spends 2 notes and
+//! creates 2, proven with one Groth16 proof (circuits/spend.circom):
+//! - `transact`      SOL deposit / private transfer / withdrawal
+//! - `private_buy`   SOL notes -> exact token amount, bought on the launchpad
+//!                   with the pool vault as buyer (no user wallet appears)
+//! - `private_sell`  token notes -> SOL, sold on the launchpad by the pool
 //!
-//! NOT AUDITED. DEV TRUSTED SETUP. Do not deploy to mainnet.
+//! Proofs fix amounts in advance, so trades use limits: a buy pays at most
+//! `max_sol`, a sell receives at least `min_sol`. Any price improvement over
+//! the limit goes to the relayer that submitted the trade.
+//!
+//! NOT AUDITED. DEV TRUSTED SETUP. Devnet only.
 
 use anchor_lang::prelude::*;
-use solana_sha256_hasher::hashv;
 use anchor_lang::system_program::{transfer, Transfer};
+use anchor_spl::associated_token::AssociatedToken;
+use anchor_spl::token::{Mint, Token, TokenAccount};
 use groth16_solana::groth16::Groth16Verifier;
+use launchpad::program::Launchpad;
 use solana_poseidon::{Endianness, Parameters};
+use solana_sha256_hasher::hashv;
 
 mod verifying_key;
 use verifying_key::{NR_PUBLIC_INPUTS, VERIFYING_KEY};
@@ -22,6 +31,8 @@ pub const LEVELS: usize = 20;
 pub const ROOT_HISTORY: usize = 32;
 /// Compliance decision: no KYC, capped deposits (100 SOL per transaction).
 pub const MAX_DEPOSIT_LAMPORTS: i64 = 100_000_000_000;
+pub const POOL_SEED: &[u8] = b"pool2";
+pub const VAULT_SEED: &[u8] = b"vault2";
 
 /// BN254 scalar field modulus, big-endian.
 const FIELD_MODULUS: [u8; 32] = [
@@ -41,127 +52,156 @@ pub mod patula {
             pool.filled_subtrees[i] = zero;
             zero = poseidon2(&zero, &zero)?;
         }
-        pool.roots[0] = zero; // empty-tree root
-        pool.current_root_index = 0;
-        pool.next_index = 0;
+        pool.roots[0] = zero;
         drop(pool);
-
-        // Keep the vault rent-exempt so withdrawals can never drain it below rent.
         let rent = Rent::get()?.minimum_balance(0);
-        transfer(
-            CpiContext::new(
-                ctx.accounts.system_program.to_account_info(),
-                Transfer {
-                    from: ctx.accounts.payer.to_account_info(),
-                    to: ctx.accounts.vault.to_account_info(),
-                },
-            ),
-            rent,
+        pay(&ctx.accounts.system_program, &ctx.accounts.payer.to_account_info(), &ctx.accounts.vault.to_account_info(), rent, None)
+    }
+
+    /// SOL deposit (ext_amount > 0), private transfer (= 0) or withdrawal (< 0).
+    pub fn transact(ctx: Context<Transact>, proof: Proof, ext_amount: i64, fee: u64) -> Result<()> {
+        require!(ext_amount <= MAX_DEPOSIT_LAMPORTS && ext_amount > i64::MIN, PatulaError::InvalidAmount);
+        let ext_hash = ext_data_hash(&[
+            &[0u8],
+            ctx.accounts.recipient.key.as_ref(),
+            ctx.accounts.signer.key.as_ref(),
+            &ext_amount.to_le_bytes(),
+            &fee.to_le_bytes(),
+        ]);
+        verify_and_record(
+            &ctx.accounts.pool,
+            &proof,
+            field(ext_amount as i128 - fee as i128),
+            [0u8; 32],
+            [0u8; 32],
+            ext_hash,
         )?;
+
+        let sys = &ctx.accounts.system_program;
+        let vault = ctx.accounts.vault.to_account_info();
+        let seeds: &[&[u8]] = &[VAULT_SEED, &[ctx.bumps.vault]];
+        if ext_amount > 0 {
+            pay(sys, &ctx.accounts.signer.to_account_info(), &vault, ext_amount as u64, None)?;
+        } else if ext_amount < 0 {
+            pay(sys, &vault, &ctx.accounts.recipient.to_account_info(), ext_amount.unsigned_abs(), Some(seeds))?;
+        }
+        if fee > 0 {
+            pay(sys, &vault, &ctx.accounts.signer.to_account_info(), fee, Some(seeds))?;
+        }
         Ok(())
     }
 
-    pub fn transact(ctx: Context<Transact>, args: TransactArgs) -> Result<()> {
-        require!(args.ext_amount <= MAX_DEPOSIT_LAMPORTS, PatulaError::DepositTooLarge);
-        require!(args.ext_amount > i64::MIN, PatulaError::InvalidExtAmount);
+    /// Spend SOL notes to buy exactly `tokens_out`, paying at most `max_sol`.
+    /// The proof creates the token note(s) and any SOL change.
+    pub fn private_buy(ctx: Context<PrivateTrade>, proof: Proof, tokens_out: u64, max_sol: u64, fee: u64) -> Result<()> {
+        let mint = ctx.accounts.mint.key();
+        let ext_hash = ext_data_hash(&[
+            &[1u8],
+            mint.as_ref(),
+            ctx.accounts.relayer.key.as_ref(),
+            &tokens_out.to_le_bytes(),
+            &max_sol.to_le_bytes(),
+            &fee.to_le_bytes(),
+        ]);
+        verify_and_record(
+            &ctx.accounts.pool,
+            &proof,
+            field(-(max_sol as i128) - fee as i128),
+            field(tokens_out as i128),
+            mint_field(&mint),
+            ext_hash,
+        )?;
 
-        // 1. Root must be one the pool has produced recently.
-        {
-            let pool = ctx.accounts.pool.load()?;
-            require!(pool.is_known_root(&args.root), PatulaError::UnknownRoot);
+        let before = ctx.accounts.vault.lamports();
+        let seeds: &[&[u8]] = &[VAULT_SEED, &[ctx.bumps.vault]];
+        launchpad::cpi::buy_exact_out(ctx.accounts.launchpad_ctx(seeds_ref(&seeds)), tokens_out, max_sol)?;
+        let spent = before - ctx.accounts.vault.lamports();
+        require!(spent <= max_sol, PatulaError::LimitExceeded);
+
+        let tip = (max_sol - spent) + fee;
+        if tip > 0 {
+            pay(&ctx.accounts.system_program, &ctx.accounts.vault.to_account_info(), &ctx.accounts.relayer.to_account_info(), tip, Some(seeds))?;
         }
+        emit!(PrivateTradeEvent { mint, is_buy: true, sol: spent, tokens: tokens_out });
+        Ok(())
+    }
 
-        // 2. publicAmount must equal extAmount - fee (mod p).
-        require!(
-            args.public_amount == public_amount_field(args.ext_amount, args.fee),
-            PatulaError::InvalidPublicAmount
-        );
+    /// Spend token notes to sell `tokens_in` for at least `min_sol`.
+    /// The proof creates the SOL note (min_sol - fee) and any token change.
+    pub fn private_sell(ctx: Context<PrivateTrade>, proof: Proof, tokens_in: u64, min_sol: u64, fee: u64) -> Result<()> {
+        require!(min_sol >= fee, PatulaError::InvalidAmount);
+        let mint = ctx.accounts.mint.key();
+        let ext_hash = ext_data_hash(&[
+            &[2u8],
+            mint.as_ref(),
+            ctx.accounts.relayer.key.as_ref(),
+            &tokens_in.to_le_bytes(),
+            &min_sol.to_le_bytes(),
+            &fee.to_le_bytes(),
+        ]);
+        verify_and_record(
+            &ctx.accounts.pool,
+            &proof,
+            field(min_sol as i128 - fee as i128),
+            field(-(tokens_in as i128)),
+            mint_field(&mint),
+            ext_hash,
+        )?;
 
-        // 3. extDataHash binds recipient, relayer and amounts into the proof,
-        //    so a relayer cannot redirect funds or change its fee.
-        let ext_data_hash = ext_data_hash(
-            &ctx.accounts.recipient.key(),
-            &ctx.accounts.signer.key(),
-            args.ext_amount,
-            args.fee,
-        );
+        let before = ctx.accounts.vault.lamports();
+        let seeds: &[&[u8]] = &[VAULT_SEED, &[ctx.bumps.vault]];
+        launchpad::cpi::sell(ctx.accounts.launchpad_sell_ctx(seeds_ref(&seeds)), tokens_in, min_sol)?;
+        let received = ctx.accounts.vault.lamports() - before;
+        require!(received >= min_sol, PatulaError::LimitExceeded);
 
-        // 4. Verify the Groth16 proof.
-        let public_inputs: [[u8; 32]; NR_PUBLIC_INPUTS] = [
-            args.root,
-            args.public_amount,
-            ext_data_hash,
-            args.input_nullifiers[0],
-            args.input_nullifiers[1],
-            args.output_commitments[0],
-            args.output_commitments[1],
-        ];
-        let mut verifier = Groth16Verifier::new(
-            &args.proof_a,
-            &args.proof_b,
-            &args.proof_c,
-            &public_inputs,
-            &VERIFYING_KEY,
-        )
+        let tip = (received - min_sol) + fee;
+        if tip > 0 {
+            pay(&ctx.accounts.system_program, &ctx.accounts.vault.to_account_info(), &ctx.accounts.relayer.to_account_info(), tip, Some(seeds))?;
+        }
+        emit!(PrivateTradeEvent { mint, is_buy: false, sol: received, tokens: tokens_in });
+        Ok(())
+    }
+}
+
+fn seeds_ref<'a>(s: &'a &'a [&'a [u8]]) -> &'a [&'a [&'a [u8]]] {
+    std::slice::from_ref(s)
+}
+
+// ---------------------------------------------------------------- shared logic
+
+fn verify_and_record(
+    pool: &AccountLoader<Pool>,
+    proof: &Proof,
+    public_sol: [u8; 32],
+    public_token: [u8; 32],
+    asset: [u8; 32],
+    ext_hash: [u8; 32],
+) -> Result<()> {
+    {
+        let p = pool.load()?;
+        require!(p.is_known_root(&proof.root), PatulaError::UnknownRoot);
+    }
+    let inputs: [[u8; 32]; NR_PUBLIC_INPUTS] = [
+        proof.root,
+        public_sol,
+        public_token,
+        asset,
+        ext_hash,
+        proof.input_nullifiers[0],
+        proof.input_nullifiers[1],
+        proof.output_commitments[0],
+        proof.output_commitments[1],
+    ];
+    let mut v = Groth16Verifier::new(&proof.a, &proof.b, &proof.c, &inputs, &VERIFYING_KEY)
         .map_err(|_| error!(PatulaError::InvalidProof))?;
-        verifier.verify().map_err(|_| error!(PatulaError::InvalidProof))?;
+    v.verify().map_err(|_| error!(PatulaError::InvalidProof))?;
 
-        // 5. Nullifier PDAs were created by `init` above: a reused nullifier
-        //    fails account creation, which blocks double spends.
-
-        // 6. Insert the two new commitments.
-        let first_index = {
-            let mut pool = ctx.accounts.pool.load_mut()?;
-            pool.insert_pair(&args.output_commitments[0], &args.output_commitments[1])?
-        };
-        emit!(NewCommitments {
-            index: first_index,
-            commitments: args.output_commitments,
-        });
-        emit!(NullifiersSpent { nullifiers: args.input_nullifiers });
-
-        // 7. Move SOL.
-        let vault_bump = ctx.bumps.vault;
-        let seeds: &[&[u8]] = &[b"vault", &[vault_bump]];
-        if args.ext_amount > 0 {
-            transfer(
-                CpiContext::new(
-                    ctx.accounts.system_program.to_account_info(),
-                    Transfer {
-                        from: ctx.accounts.signer.to_account_info(),
-                        to: ctx.accounts.vault.to_account_info(),
-                    },
-                ),
-                args.ext_amount as u64,
-            )?;
-        } else if args.ext_amount < 0 {
-            transfer(
-                CpiContext::new_with_signer(
-                    ctx.accounts.system_program.to_account_info(),
-                    Transfer {
-                        from: ctx.accounts.vault.to_account_info(),
-                        to: ctx.accounts.recipient.to_account_info(),
-                    },
-                    &[seeds],
-                ),
-                args.ext_amount.unsigned_abs(),
-            )?;
-        }
-        if args.fee > 0 {
-            transfer(
-                CpiContext::new_with_signer(
-                    ctx.accounts.system_program.to_account_info(),
-                    Transfer {
-                        from: ctx.accounts.vault.to_account_info(),
-                        to: ctx.accounts.signer.to_account_info(),
-                    },
-                    &[seeds],
-                ),
-                args.fee,
-            )?;
-        }
-        Ok(())
-    }
+    // Nullifier PDAs were created by `init` in the accounts struct: a reused
+    // nullifier fails account creation, which blocks double spends.
+    let index = pool.load_mut()?.insert_pair(&proof.output_commitments[0], &proof.output_commitments[1])?;
+    emit!(NewCommitments { index, commitments: proof.output_commitments });
+    emit!(NullifiersSpent { nullifiers: proof.input_nullifiers });
+    Ok(())
 }
 
 // ---------------------------------------------------------------- accounts
@@ -180,8 +220,6 @@ impl Pool {
         *root != [0u8; 32] && self.roots.iter().any(|r| r == root)
     }
 
-    /// Inserts two leaves at once (next_index is always even), costing
-    /// LEVELS Poseidon hashes instead of 2 * LEVELS.
     fn insert_pair(&mut self, left: &[u8; 32], right: &[u8; 32]) -> Result<u64> {
         let index = self.next_index;
         require!(index + 2 <= 1u64 << LEVELS, PatulaError::TreeFull);
@@ -207,42 +245,37 @@ impl Pool {
 #[account]
 pub struct Nullifier {}
 
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct Proof {
+    pub a: [u8; 64],
+    pub b: [u8; 128],
+    pub c: [u8; 64],
+    pub root: [u8; 32],
+    pub input_nullifiers: [[u8; 32]; 2],
+    pub output_commitments: [[u8; 32]; 2],
+}
+
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    #[account(init, payer = payer, space = 8 + std::mem::size_of::<Pool>(), seeds = [b"pool"], bump)]
+    #[account(init, payer = payer, space = 8 + std::mem::size_of::<Pool>(), seeds = [POOL_SEED], bump)]
     pub pool: AccountLoader<'info, Pool>,
-    #[account(mut, seeds = [b"vault"], bump)]
+    #[account(mut, seeds = [VAULT_SEED], bump)]
     pub vault: SystemAccount<'info>,
     #[account(mut)]
     pub payer: Signer<'info>,
     pub system_program: Program<'info, System>,
 }
 
-#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
-pub struct TransactArgs {
-    pub proof_a: [u8; 64],
-    pub proof_b: [u8; 128],
-    pub proof_c: [u8; 64],
-    pub root: [u8; 32],
-    pub public_amount: [u8; 32],
-    pub ext_amount: i64,
-    pub fee: u64,
-    pub input_nullifiers: [[u8; 32]; 2],
-    pub output_commitments: [[u8; 32]; 2],
-}
-
 #[derive(Accounts)]
-#[instruction(args: TransactArgs)]
+#[instruction(proof: Proof)]
 pub struct Transact<'info> {
-    #[account(mut, seeds = [b"pool"], bump)]
+    #[account(mut, seeds = [POOL_SEED], bump)]
     pub pool: AccountLoader<'info, Pool>,
-    #[account(mut, seeds = [b"vault"], bump)]
+    #[account(mut, seeds = [VAULT_SEED], bump)]
     pub vault: SystemAccount<'info>,
-    #[account(init, payer = signer, space = 8,
-        seeds = [b"nullifier", args.input_nullifiers[0].as_ref()], bump)]
+    #[account(init, payer = signer, space = 8, seeds = [b"nullifier", proof.input_nullifiers[0].as_ref()], bump)]
     pub nullifier0: Box<Account<'info, Nullifier>>,
-    #[account(init, payer = signer, space = 8,
-        seeds = [b"nullifier", args.input_nullifiers[1].as_ref()], bump)]
+    #[account(init, payer = signer, space = 8, seeds = [b"nullifier", proof.input_nullifiers[1].as_ref()], bump)]
     pub nullifier1: Box<Account<'info, Nullifier>>,
     /// Depositor for deposits; the relayer for private transfers/withdrawals.
     #[account(mut)]
@@ -251,6 +284,90 @@ pub struct Transact<'info> {
     #[account(mut)]
     pub recipient: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(proof: Proof)]
+pub struct PrivateTrade<'info> {
+    #[account(mut, seeds = [POOL_SEED], bump)]
+    pub pool: AccountLoader<'info, Pool>,
+    #[account(mut, seeds = [VAULT_SEED], bump)]
+    pub vault: SystemAccount<'info>,
+    #[account(init, payer = relayer, space = 8, seeds = [b"nullifier", proof.input_nullifiers[0].as_ref()], bump)]
+    pub nullifier0: Box<Account<'info, Nullifier>>,
+    #[account(init, payer = relayer, space = 8, seeds = [b"nullifier", proof.input_nullifiers[1].as_ref()], bump)]
+    pub nullifier1: Box<Account<'info, Nullifier>>,
+    #[account(mut)]
+    pub relayer: Signer<'info>,
+    pub mint: Box<Account<'info, Mint>>,
+    /// The pool's token account for this mint. The relayer pays its rent once,
+    /// so pool funds never cover it.
+    #[account(init_if_needed, payer = relayer, associated_token::mint = mint, associated_token::authority = vault)]
+    pub pool_token: Box<Account<'info, TokenAccount>>,
+    /// CHECK: validated by the launchpad program
+    pub lp_config: UncheckedAccount<'info>,
+    /// CHECK: validated by the launchpad program
+    #[account(mut)]
+    pub lp_curve: UncheckedAccount<'info>,
+    /// CHECK: validated by the launchpad program
+    #[account(mut)]
+    pub lp_curve_token_vault: UncheckedAccount<'info>,
+    /// CHECK: validated by the launchpad program
+    #[account(mut)]
+    pub lp_sol_vault: UncheckedAccount<'info>,
+    /// CHECK: validated by the launchpad program
+    #[account(mut)]
+    pub lp_fee_recipient: UncheckedAccount<'info>,
+    /// CHECK: validated by the launchpad program
+    #[account(mut)]
+    pub lp_creator: UncheckedAccount<'info>,
+    pub launchpad_program: Program<'info, Launchpad>,
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
+}
+
+impl<'info> PrivateTrade<'info> {
+    fn launchpad_ctx<'a>(&self, seeds: &'a [&'a [&'a [u8]]]) -> CpiContext<'a, 'a, 'a, 'info, launchpad::cpi::accounts::Buy<'info>> {
+        CpiContext::new_with_signer(
+            self.launchpad_program.to_account_info(),
+            launchpad::cpi::accounts::Buy {
+                config: self.lp_config.to_account_info(),
+                curve: self.lp_curve.to_account_info(),
+                mint: self.mint.to_account_info(),
+                curve_token_vault: self.lp_curve_token_vault.to_account_info(),
+                sol_vault: self.lp_sol_vault.to_account_info(),
+                buyer: self.vault.to_account_info(),
+                buyer_token: self.pool_token.to_account_info(),
+                fee_recipient: self.lp_fee_recipient.to_account_info(),
+                creator: self.lp_creator.to_account_info(),
+                token_program: self.token_program.to_account_info(),
+                associated_token_program: self.associated_token_program.to_account_info(),
+                system_program: self.system_program.to_account_info(),
+            },
+            seeds,
+        )
+    }
+
+    fn launchpad_sell_ctx<'a>(&self, seeds: &'a [&'a [&'a [u8]]]) -> CpiContext<'a, 'a, 'a, 'info, launchpad::cpi::accounts::Sell<'info>> {
+        CpiContext::new_with_signer(
+            self.launchpad_program.to_account_info(),
+            launchpad::cpi::accounts::Sell {
+                config: self.lp_config.to_account_info(),
+                curve: self.lp_curve.to_account_info(),
+                mint: self.mint.to_account_info(),
+                curve_token_vault: self.lp_curve_token_vault.to_account_info(),
+                sol_vault: self.lp_sol_vault.to_account_info(),
+                seller: self.vault.to_account_info(),
+                seller_token: self.pool_token.to_account_info(),
+                fee_recipient: self.lp_fee_recipient.to_account_info(),
+                creator: self.lp_creator.to_account_info(),
+                token_program: self.token_program.to_account_info(),
+                system_program: self.system_program.to_account_info(),
+            },
+            seeds,
+        )
+    }
 }
 
 #[event]
@@ -264,6 +381,14 @@ pub struct NullifiersSpent {
     pub nullifiers: [[u8; 32]; 2],
 }
 
+#[event]
+pub struct PrivateTradeEvent {
+    pub mint: Pubkey,
+    pub is_buy: bool,
+    pub sol: u64,
+    pub tokens: u64,
+}
+
 #[error_code]
 pub enum PatulaError {
     #[msg("Poseidon hash failed")]
@@ -272,14 +397,12 @@ pub enum PatulaError {
     TreeFull,
     #[msg("Root is not in recent history")]
     UnknownRoot,
-    #[msg("publicAmount does not match extAmount - fee")]
-    InvalidPublicAmount,
     #[msg("Invalid zero-knowledge proof")]
     InvalidProof,
-    #[msg("Deposit exceeds the per-transaction cap")]
-    DepositTooLarge,
-    #[msg("Invalid extAmount")]
-    InvalidExtAmount,
+    #[msg("Invalid amount")]
+    InvalidAmount,
+    #[msg("Trade limit exceeded")]
+    LimitExceeded,
 }
 
 // ---------------------------------------------------------------- helpers
@@ -290,29 +413,41 @@ fn poseidon2(a: &[u8; 32], b: &[u8; 32]) -> Result<[u8; 32]> {
         .map_err(|_| error!(PatulaError::Poseidon))
 }
 
-/// sha256(recipient || relayer || ext_amount_le || fee_le) with the top byte
-/// cleared so it is always a valid field element.
-pub fn ext_data_hash(recipient: &Pubkey, relayer: &Pubkey, ext_amount: i64, fee: u64) -> [u8; 32] {
-    let mut h = hashv(&[
-        recipient.as_ref(),
-        relayer.as_ref(),
-        &ext_amount.to_le_bytes(),
-        &fee.to_le_bytes(),
-    ])
-    .to_bytes();
+fn pay<'info>(
+    sys: &Program<'info, System>,
+    from: &AccountInfo<'info>,
+    to: &AccountInfo<'info>,
+    amount: u64,
+    seeds: Option<&[&[u8]]>,
+) -> Result<()> {
+    let accounts = Transfer { from: from.clone(), to: to.clone() };
+    match seeds {
+        Some(s) => transfer(CpiContext::new_with_signer(sys.to_account_info(), accounts, &[s]), amount),
+        None => transfer(CpiContext::new(sys.to_account_info(), accounts), amount),
+    }
+}
+
+/// sha256 of the parts with the top byte cleared, so it is a valid field element.
+pub fn ext_data_hash(parts: &[&[u8]]) -> [u8; 32] {
+    let mut h = hashv(parts).to_bytes();
     h[0] = 0;
     h
 }
 
-/// (ext_amount - fee) mod p, big-endian.
-pub fn public_amount_field(ext_amount: i64, fee: u64) -> [u8; 32] {
-    let v = ext_amount as i128 - fee as i128;
+/// A token's asset id inside notes: its mint address with the top byte cleared.
+pub fn mint_field(mint: &Pubkey) -> [u8; 32] {
+    let mut b = mint.to_bytes();
+    b[0] = 0;
+    b
+}
+
+/// v mod p, big-endian.
+pub fn field(v: i128) -> [u8; 32] {
     let mut out = [0u8; 32];
     out[16..].copy_from_slice(&v.unsigned_abs().to_be_bytes());
     if v >= 0 {
         return out;
     }
-    // p - |v|
     let mut res = [0u8; 32];
     let mut borrow = 0i16;
     for i in (0..32).rev() {
@@ -332,11 +467,10 @@ pub fn public_amount_field(ext_amount: i64, fee: u64) -> [u8; 32] {
 mod tests {
     use super::*;
     #[test]
-    fn negative_public_amount_wraps() {
-        let a = public_amount_field(-1, 0);
+    fn negative_field_wraps() {
         let mut expect = FIELD_MODULUS;
-        expect[31] = 0x00; // p - 1
-        assert_eq!(a, expect);
-        assert_eq!(public_amount_field(5, 2)[31], 3);
+        expect[31] = 0;
+        assert_eq!(field(-1), expect);
+        assert_eq!(field(3)[31], 3);
     }
 }
