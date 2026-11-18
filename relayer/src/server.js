@@ -172,11 +172,11 @@ const saveTree = () => {
   } catch { /* best effort */ }
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function withRetry(fn, tries = 6) {
+async function withRetry(fn, tries = 10) {
   for (let i = 0; ; i++) {
     try { return await fn(); } catch (e) {
       if (i >= tries - 1 || !/429|Too many|timed out|fetch failed/i.test(String(e?.message || e))) throw e;
-      await sleep(500 * 2 ** i);
+      await sleep(Math.min(30_000, 1000 * 2 ** i));
     }
   }
 }
@@ -193,10 +193,11 @@ async function syncTree() {
       before = page[page.length - 1].signature;
     }
     fresh.reverse(); // oldest first, so progress can be saved as we go
-    for (let i = 0; i < fresh.length; i += 5) {
-      const chunk = fresh.slice(i, i + 5);
-      const ok = chunk.filter((x) => !x.err).map((x) => x.signature);
-      const txs = ok.length ? await withRetry(() => connection.getTransactions(ok, { commitment: "confirmed", maxSupportedTransactionVersion: 0 })) : [];
+    // one lookup at a time, spaced out: public RPCs throttle getTransaction hard
+    for (let i = 0; i < fresh.length; i++) {
+      const chunk = [fresh[i]];
+      const txs = fresh[i].err ? [] : [await withRetry(() => connection.getTransaction(fresh[i].signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 }))];
+      await sleep(Number(process.env.RPC_SPACING_MS || 350));
       for (const tx of txs) {
         for (const ev of parser.parseLogs(tx?.meta?.logMessages ?? [])) {
           if (ev.name.toLowerCase() !== "newcommitments") continue;
@@ -494,7 +495,7 @@ const server = http.createServer(async (req, res) => {
 
 // keep the note tree warm in the background
 syncTree().catch((e) => console.error("tree sync", e?.message || e));
-setInterval(() => syncTree().catch((e) => console.error("tree sync", e?.message || e)), 8_000);
+setInterval(() => { if (!tree.syncing) syncTree().catch((e) => console.error("tree sync", e?.message || e)); }, 15_000);
 
 server.listen(PORT, () => {
   console.log(`patula-relayer v2 on :${PORT} · ${CLUSTER} · pool ${POOL_ID.toBase58()} · relayer ${relayer.publicKey.toBase58()} · alt ${ALT_ADDRESS?.toBase58() ?? "none"}`);
