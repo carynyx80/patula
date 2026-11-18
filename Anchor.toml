@@ -8,6 +8,9 @@ skip-lint = false
 [programs.localnet]
 patula = "GVrC5uW3cXm3JReHtG7R1zmJ8Sf1Zx6PHr1Hnt9Ld8GV"
 
+[programs.devnet]
+patula = "GVrC5uW3cXm3JReHtG7R1zmJ8Sf1Zx6PHr1Hnt9Ld8GV"
+
 [registry]
 url = "https://api.apr.dev"
 

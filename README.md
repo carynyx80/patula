@@ -29,3 +29,9 @@ npx circom2 circuits/transaction.circom --r1cs --wasm --sym -o build/circuits
 node scripts/vk_to_rust.js build/circuits/verification_key.json programs/patula/src/verifying_key.rs
 anchor test                   # metrics → build/metrics.json
 ```
+
+## Devnet
+
+Program `GVrC5uW3cXm3JReHtG7R1zmJ8Sf1Zx6PHr1Hnt9Ld8GV` is deployed on devnet with an initialized pool.
+`RELAYER_URL=https://relayer-production-a1eda68c.up.railway.app npx ts-node -P tsconfig.json scripts/devnet.ts`
+initializes the pool if needed, tops up the relayer, deposits 0.05 SOL and withdraws it privately to a fresh address through the hosted relayer.
